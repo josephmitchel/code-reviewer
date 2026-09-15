@@ -1,0 +1,1 @@
+ALTER TABLE "concerns" ALTER COLUMN "origin_review_id" DROP NOT NULL;

@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789353237601,
+      "tag": "0000_reflective_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789404034220,
+      "tag": "0001_elite_warpath",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789498023554,
+      "tag": "0002_acoustic_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789498236168,
+      "tag": "0003_volatile_lightspeed",
+      "breakpoints": true
+    }
+  ]
+}
