@@ -1,7 +1,7 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { postComment } from '../github.js';
-import { renderReport, type ReportConcern, type ReportQuestion, type AutoDecision } from '../render-report.js';
+import { renderReport, type ReportConcern, type ReportQuestion } from '../render-report.js';
 import { scoreConcerns } from '../scoring.js';
 import { pendingUserFacingQuestions } from './questions.js';
 import { MAX_ROUNDS, requireRound, type Ctx, type ConcernRow, type RoundRow } from './context.js';
@@ -48,7 +48,6 @@ export async function reportData(ctx: Ctx, round: RoundRow): Promise<{
   score: ReturnType<typeof scoreConcerns>;
   concerns: ReportConcern[];
   questions: ReportQuestion[];
-  autoDecisions: AutoDecision[];
 }> {
   const concerns = await reviewConcerns(ctx);
   const open = concerns.filter((c) => c.status === 'open');
@@ -60,11 +59,6 @@ export async function reportData(ctx: Ctx, round: RoundRow): Promise<{
   const pending = await pendingUserFacingQuestions(ctx);
   const heldIds = new Set(pending.map((q) => q.concernId).filter((id) => id !== null));
   const slugById = new Map(concerns.map((c) => [c.id, c.slug]));
-
-  const autoRows = await db
-    .select()
-    .from(schema.questions)
-    .where(and(eq(schema.questions.roundId, round.id), eq(schema.questions.autoApplied, true)));
 
   return {
     score,
@@ -86,7 +80,6 @@ export async function reportData(ctx: Ctx, round: RoundRow): Promise<{
       recommendation: q.recommendation,
       concernSlug: q.concernId ? (slugById.get(q.concernId) ?? null) : null,
     })),
-    autoDecisions: autoRows.map((q) => ({ text: q.text, recommendation: q.recommendation })),
   };
 }
 
@@ -102,9 +95,7 @@ export async function runReport(ctx: Ctx): Promise<void> {
     headSha: round.headSha,
     score: data.score,
     testsLine: testsLine(ctx),
-    prSummary: round.prSummary,
     roundSummary: round.roundSummary,
-    autoDecisions: data.autoDecisions,
     concerns: data.concerns,
     questions: data.questions,
   });

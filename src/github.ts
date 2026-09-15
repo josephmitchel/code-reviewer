@@ -56,6 +56,21 @@ export async function postComment(
   return res.id;
 }
 
+export async function updateComment(
+  repoSlug: string,
+  commentId: number,
+  body: string,
+): Promise<void> {
+  await gh([
+    'api',
+    '-X',
+    'PATCH',
+    `repos/${repoSlug}/issues/comments/${commentId}`,
+    '-f',
+    `body=${body}`,
+  ]);
+}
+
 export interface IssueComment {
   id: number;
   body: string;

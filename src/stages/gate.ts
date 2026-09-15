@@ -54,9 +54,7 @@ export async function runGating(ctx: Ctx): Promise<void> {
       headSha: round.headSha,
       score: data.score,
       testsLine: testsLine(ctx),
-      prSummary: round.prSummary,
       roundSummary: round.roundSummary,
-      autoDecisions: data.autoDecisions,
       concerns: data.concerns,
       questions: data.questions,
     });

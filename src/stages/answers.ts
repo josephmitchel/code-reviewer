@@ -18,7 +18,7 @@ async function ownCommentIds(ctx: Ctx): Promise<Set<number>> {
     .where(eq(schema.githubArtifacts.reviewId, ctx.review.id));
   return new Set(
     rows
-      .filter((r) => r.kind === 'report_comment' || r.kind === 'summary_comment')
+      .filter((r) => r.kind === 'report_comment' || r.kind === 'summary_comment' || r.kind === 'pr_summary_comment')
       .map((r) => Number(r.githubId))
       .filter((n) => Number.isFinite(n)),
   );

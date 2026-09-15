@@ -24,11 +24,6 @@ export interface ReportQuestion {
   concernSlug: string | null;
 }
 
-export interface AutoDecision {
-  text: string;
-  recommendation: string | null;
-}
-
 export interface ReportInput {
   mode: 'round' | 'final';
   passWithWarnings?: boolean;
@@ -37,9 +32,7 @@ export interface ReportInput {
   headSha: string;
   score: Score;
   testsLine: string;
-  prSummary: string | null;
   roundSummary: string | null;
-  autoDecisions: AutoDecision[];
   /** Open concerns of the review. */
   concerns: ReportConcern[];
   /** User-facing questions still awaiting the owner's answer. */
@@ -80,34 +73,19 @@ function concernTable(concerns: ReportConcern[]): string[] {
 export function renderReport(input: ReportInput): string {
   const lines: string[] = [];
   if (input.mode === 'round') {
-    lines.push(`## Code Reviewer — round ${input.roundNo} of ${input.maxRounds}`);
+    lines.push(`# Code Reviewer — round ${input.roundNo} of ${input.maxRounds}`);
   } else {
-    lines.push(input.passWithWarnings ? '## Code Reviewer — passed with warnings ⚠️' : '## Code Reviewer — passed ✅');
+    lines.push(input.passWithWarnings ? '# Code Reviewer — passed with warnings ⚠️' : '# Code Reviewer — passed ✅');
   }
   lines.push('');
   lines.push(`Audited \`${input.headSha.slice(0, 10)}\`. ${formatScore(input.score)}`);
   lines.push(`Tests: ${input.testsLine}`);
   lines.push('');
 
-  if (input.prSummary) {
-    lines.push('### PR Summary');
-    lines.push('');
-    lines.push(input.prSummary.trim());
-    lines.push('');
-  }
-
-  lines.push(`### Round ${input.roundNo} Report`);
+  lines.push(`## Round ${input.roundNo} Report`);
   lines.push('');
   if (input.roundSummary) {
     lines.push(input.roundSummary.trim());
-    lines.push('');
-  }
-  if (input.autoDecisions.length > 0) {
-    lines.push('**Decisions made automatically** (reply if you want any of these changed):');
-    lines.push('');
-    for (const d of input.autoDecisions) {
-      lines.push(`- ${d.text}${d.recommendation ? ` — went with: ${d.recommendation}` : ''}`);
-    }
     lines.push('');
   }
 
@@ -116,13 +94,13 @@ export function renderReport(input: ReportInput): string {
       lines.push('No open concerns.');
       lines.push('');
     } else {
-      lines.push('### Concerns');
+      lines.push('## Concerns');
       lines.push('');
       lines.push(...concernTable(input.concerns));
       lines.push('');
     }
     if (input.questions.length > 0) {
-      lines.push('### Questions');
+      lines.push('## Questions');
       lines.push('');
       for (const q of input.questions) {
         lines.push(`${q.ordinal}. ${q.text}${q.concernSlug ? ` _(re: ${q.concernSlug})_` : ''}`);
@@ -143,7 +121,7 @@ export function renderReport(input: ReportInput): string {
     const warnings = input.concerns.filter((c) => c.blocking);
     const info = input.concerns.filter((c) => !c.blocking);
     if (warnings.length > 0 || input.questions.length > 0) {
-      lines.push('### Warnings');
+      lines.push('## Warnings');
       lines.push('');
       lines.push('_The round cap was reached, so the gate passed with these unresolved:_');
       lines.push('');
@@ -162,7 +140,7 @@ export function renderReport(input: ReportInput): string {
       }
     }
     if (info.length > 0) {
-      lines.push('### Remaining notes (not blocking)');
+      lines.push('## Remaining notes (not blocking)');
       lines.push('');
       for (const c of info) {
         lines.push(`- **${c.slug}** (${c.level}): ${c.title}`);

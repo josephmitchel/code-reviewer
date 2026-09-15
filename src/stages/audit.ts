@@ -5,6 +5,7 @@ import { loadPrompt, runAgent, withConcurrency } from '../agents/run-agent.js';
 import { changedFilePaths } from '../workspace.js';
 import { auditorOutputSchema, scoutOutputSchema } from '../agents/schemas.js';
 import type { TestResult } from '../db/schema.js';
+import { ensurePrSummaryComment } from './pr-summary.js';
 import { AGENT_CONCURRENCY, AUDITOR_CHARACTERISTICS, requireRound, requireWorkspace, type Ctx } from './context.js';
 
 export function renderTestResults(results: TestResult[] | null): string {
@@ -58,6 +59,10 @@ export async function runAudit(ctx: Ctx): Promise<void> {
     }
   }
   console.log(`blast radius (${round.kind}): ${blastRadius.length} files`);
+
+  if (round.kind !== 'verification') {
+    await ensurePrSummaryComment(ctx);
+  }
 
   const blastPaths = new Set(blastRadius.map((f) => f.path));
   const openConcerns = await db
