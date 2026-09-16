@@ -74,7 +74,9 @@ export async function runRepoCommand(
 
 /** Keep the failure-relevant tail; full logs don't belong in the database or prompts. */
 function trimOutput(output: string): string {
-  const lines = output.split('\n').filter((l) => l.trim() !== '');
+  // NUL can show up in test failure diffs (repos that use '\u0000' key separators) and
+  // Postgres jsonb/text columns reject it — store the literal escape text instead.
+  const lines = output.replaceAll('\u0000', '\\u0000').split('\n').filter((l) => l.trim() !== '');
   const interesting = lines.filter(
     (l) => /fail|error|✗|✘|×|assert|expect|Δ|throw/i.test(l) && !/^npm (warn|notice)/i.test(l),
   );
