@@ -4,7 +4,7 @@ import { postComment, updateComment } from '../github.js';
 import { requireRound, type Ctx } from './context.js';
 
 /**
- * The PR Summary lives in its own comment — the first one posted on the PR. A re-review
+ * The Patch Notes live in their own comment — the first one posted on the PR. A re-review
  * (new full round, new head) edits that comment in place rather than posting another.
  */
 export async function ensurePrSummaryComment(ctx: Ctx): Promise<void> {
@@ -21,7 +21,7 @@ export async function ensurePrSummaryComment(ctx: Ctx): Promise<void> {
       ),
     );
 
-  const body = `# PR Summary\n\n${round.prSummary.trim()}`;
+  const body = `# Patch Notes\n\n${round.prSummary.trim()}`;
   if (!existing) {
     const commentId = await postComment(ctx.repo.slug, ctx.review.prNumber, body);
     await db.insert(schema.githubArtifacts).values({
@@ -31,7 +31,7 @@ export async function ensurePrSummaryComment(ctx: Ctx): Promise<void> {
       sha: round.headSha,
       roundNo: round.roundNo,
     });
-    console.log(`PR summary posted (comment ${commentId})`);
+    console.log(`patch notes posted (comment ${commentId})`);
   } else if (round.kind === 'full' && existing.sha !== round.headSha) {
     // Verification rounds only carry the summary forward; a full round on a new head means
     // a re-review produced a fresh summary.
@@ -40,6 +40,6 @@ export async function ensurePrSummaryComment(ctx: Ctx): Promise<void> {
       .update(schema.githubArtifacts)
       .set({ sha: round.headSha, roundNo: round.roundNo, postedAt: new Date() })
       .where(eq(schema.githubArtifacts.id, existing.id));
-    console.log(`PR summary updated (comment ${existing.githubId})`);
+    console.log(`patch notes updated (comment ${existing.githubId})`);
   }
 }

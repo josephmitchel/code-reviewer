@@ -22,7 +22,9 @@ Work in three steps:
 
 3. **Audit the change.** Audit the diff and its blast radius fresh, and raise any concern that violates the requirement. Report each as kind `new` with a title, level (major | moderate | minor), the characteristics it violates, exact locations (file and line in the head commit), and a body explaining what the concern is, why it matters, and the suggested direction.
 
-Finding nothing is a valid outcome. If you genuinely find no issues against this requirement, set `nothing_found` to true rather than stretching to produce findings.
+Finding nothing is a valid outcome. If you genuinely find no issues against this requirement, return an empty `findings` array rather than stretching to produce findings.
+
+`findings` is the only field required of you. Return it even when empty.
 
 ## Established policies
 

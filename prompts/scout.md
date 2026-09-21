@@ -15,4 +15,6 @@ Trace one level of consumers; go a second level only when the first-level consum
 
 Return every file via the structured output with its path (relative to the repo root) and a short reason.
 
-Also return `pr_summary`: a short, non-technical paragraph describing what this PR changes in the app from a user's perspective — features added, changed, or removed, and any behavior a user of the app would notice. Write it the way you would explain the change to someone who uses the app but has never seen the code: no file names, no library or migration talk, no implementation detail. Describe the whole PR (base...head), not just the latest commits.
+Also return `pr_summary`: non-technical patch notes describing what this PR changes in the app from a user's perspective — features added, changed, or removed, and any behavior a user of the app would notice. Write it the way you would explain the change to someone who uses the app but has never seen the code: no file names, no library or migration talk, no implementation detail. Describe the whole PR (base...head), not just the latest commits.
+
+Format it as a markdown bullet list — one `- ` bullet per user-visible change, each a single self-contained sentence, ordered most to least significant. Typically 2–6 bullets; use one bullet if the PR does exactly one thing. No headers, no intro or closing paragraph, no nested bullets — bullets only.

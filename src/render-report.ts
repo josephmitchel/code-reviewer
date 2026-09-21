@@ -120,24 +120,29 @@ export function renderReport(input: ReportInput): string {
   } else {
     const warnings = input.concerns.filter((c) => c.blocking);
     const info = input.concerns.filter((c) => !c.blocking);
-    if (warnings.length > 0 || input.questions.length > 0) {
+    // Warnings only exist when the gate passed over still-blocking concerns, which the gate
+    // only ever does at the round cap. Unanswered questions are not warnings — they never
+    // blocked the gate, so they get their own section with no cap talk.
+    if (warnings.length > 0) {
       lines.push('## Warnings');
       lines.push('');
-      lines.push('_The round cap was reached, so the gate passed with these unresolved:_');
+      lines.push(
+        `_The round cap (${input.maxRounds}) was reached, so the gate passed with these unresolved:_`,
+      );
       lines.push('');
-      if (warnings.length > 0) {
-        lines.push(...concernTable(warnings));
-        lines.push('');
+      lines.push(...concernTable(warnings));
+      lines.push('');
+    }
+    if (input.questions.length > 0) {
+      lines.push('## Unanswered questions');
+      lines.push('');
+      lines.push('_These did not block the gate. Answering them still saves the decision as repo policy:_');
+      lines.push('');
+      for (const q of input.questions) {
+        lines.push(`${q.ordinal}. ${q.text}${q.concernSlug ? ` _(re: ${q.concernSlug})_` : ''}`);
+        if (q.recommendation) lines.push(`   - **Recommended:** ${q.recommendation}`);
       }
-      if (input.questions.length > 0) {
-        lines.push('**Unanswered questions:**');
-        lines.push('');
-        for (const q of input.questions) {
-          lines.push(`${q.ordinal}. ${q.text}${q.concernSlug ? ` _(re: ${q.concernSlug})_` : ''}`);
-          if (q.recommendation) lines.push(`   - **Recommended:** ${q.recommendation}`);
-        }
-        lines.push('');
-      }
+      lines.push('');
     }
     if (info.length > 0) {
       lines.push('## Remaining notes (not blocking)');

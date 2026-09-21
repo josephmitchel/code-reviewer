@@ -7,6 +7,7 @@ import { runAudit } from './stages/audit.js';
 import { runSynthesis } from './stages/synthesis.js';
 import { runReport, blockingConcerns } from './stages/report.js';
 import { runAwaitAnswers } from './stages/answers.js';
+import { pendingUserFacingQuestions } from './stages/questions.js';
 import { runFixPlanning, runFixing } from './stages/fix.js';
 import { runJudging } from './stages/judge.js';
 import { runGating } from './stages/gate.js';
@@ -53,7 +54,7 @@ export async function runReview(repoSlug: string, prNumber: number): Promise<voi
   const ctx = await loadCtx(repoSlug, prNumber);
   if (ctx.review.state === 'failed') {
     console.log(`previous run failed (${ctx.review.error ?? 'no error recorded'}) — retrying`);
-    await setState(ctx, inferRetryState(ctx));
+    await setState(ctx, await inferRetryState(ctx));
   }
 
   while (ctx.review.state !== 'passed') {
@@ -88,7 +89,9 @@ export async function runReview(repoSlug: string, prNumber: number): Promise<voi
         }
         case 'reporting':
           await runReport(ctx);
-          await setState(ctx, 'awaiting_answers');
+          // With nothing to ask the owner there is nothing to await — skip straight to fixes
+          // rather than announcing a wait that resolves immediately.
+          await setState(ctx, await stateAfterReport(ctx));
           break;
         case 'awaiting_answers':
           await runAwaitAnswers(ctx);
@@ -121,6 +124,12 @@ export async function runReview(repoSlug: string, prNumber: number): Promise<voi
   console.log(`\nreview passed — PR #${prNumber} gate is green.`);
 }
 
+/** Only wait on the owner when there is actually an unanswered user-facing question. */
+async function stateAfterReport(ctx: Ctx): Promise<State> {
+  const pending = await pendingUserFacingQuestions(ctx);
+  return pending.length > 0 ? 'awaiting_answers' : 'fix_planning';
+}
+
 /** For resumes that land mid-pipeline: ensure the workspace exists without creating a new round. */
 async function runIntakeWorkspaceOnly(ctx: Ctx): Promise<void> {
   if (!ctx.round) throw new Error(`state ${ctx.review.state} with no current round`);
@@ -133,13 +142,13 @@ async function runIntakeWorkspaceOnly(ctx: Ctx): Promise<void> {
 }
 
 /** A failed run retries the state it failed in (recorded state was already advanced past pending). */
-function inferRetryState(ctx: Ctx): State {
+async function inferRetryState(ctx: Ctx): Promise<State> {
   // reviews.state was overwritten with 'failed'; the last real state is recoverable from progress markers.
   if (!ctx.round) return 'intake';
   if (!ctx.round.testResults) return 'intake';
   if (!ctx.round.synthesizedAt) return 'auditing';
   if (!ctx.round.reportCommentId) return 'synthesizing';
-  if (!ctx.round.plan) return 'awaiting_answers';
+  if (!ctx.round.plan) return stateAfterReport(ctx);
   return 'fixing';
 }
 

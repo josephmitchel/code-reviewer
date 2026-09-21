@@ -4,9 +4,15 @@ import { getPr } from '../github.js';
 import { prepareWorkspace, runRepoCommand } from '../workspace.js';
 import { MAX_ROUNDS, type Ctx } from './context.js';
 
-export async function runIntake(ctx: Ctx): Promise<void> {
+/**
+ * One active review per repo — but a run killed mid-pipeline leaves its review parked in a
+ * non-terminal state forever, blocking every later PR. A review whose PR is no longer open
+ * can never make progress (its own intake would reject the closed PR), so retire it here
+ * instead of making the owner reset it by hand. Anything still open really is a conflict.
+ */
+async function releaseStaleReviews(ctx: Ctx): Promise<void> {
   const conflicting = await db
-    .select({ id: schema.reviews.id, pr: schema.reviews.prNumber })
+    .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
     .from(schema.reviews)
     .where(
       and(
@@ -15,11 +21,37 @@ export async function runIntake(ctx: Ctx): Promise<void> {
         notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
       ),
     );
-  if (conflicting.length > 0) {
-    throw new Error(
-      `another review is active for ${ctx.repo.slug} (PR #${conflicting[0].pr}) — one active review per repo`,
-    );
+
+  for (const other of conflicting) {
+    let prState: string;
+    try {
+      prState = (await getPr(ctx.repo.slug, other.pr)).state;
+    } catch (err) {
+      // Can't prove it's dead — treat it as a live conflict rather than stealing its slot.
+      throw new Error(
+        `another review is active for ${ctx.repo.slug} (PR #${other.pr}) and its state could not be ` +
+          `checked (${String(err).split('\n')[0]}) — one active review per repo`,
+      );
+    }
+    if (prState === 'open') {
+      throw new Error(
+        `another review is active for ${ctx.repo.slug} (PR #${other.pr}) — one active review per repo`,
+      );
+    }
+    await db
+      .update(schema.reviews)
+      .set({
+        state: 'failed',
+        error: `abandoned in state ${other.state}: PR #${other.pr} is ${prState}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.reviews.id, other.id));
+    console.log(`released stale review for PR #${other.pr} (was ${other.state}, PR is ${prState})`);
   }
+}
+
+export async function runIntake(ctx: Ctx): Promise<void> {
+  await releaseStaleReviews(ctx);
 
   const pr = await getPr(ctx.repo.slug, ctx.review.prNumber);
   if (pr.isFork) throw new Error('fork PRs are not supported (no push access to the fork branch)');

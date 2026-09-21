@@ -132,9 +132,9 @@ export async function runAudit(ctx: Ctx): Promise<void> {
             payload: res.output,
           });
         }
-        console.log(
-          `  [${role}] ${res.output.nothing_found ? 'nothing found' : `${res.output.findings.length} finding(s)`}`,
-        );
+        // Report what was actually recorded, not what the agent claimed about itself.
+        const n = res.output.findings.length;
+        console.log(`  [${role}] ${n === 0 ? 'nothing found' : `${n} finding(s)`}`);
       });
     }
   }

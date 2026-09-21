@@ -25,8 +25,12 @@ export const findingSchema = z.object({
 
 export const auditorOutputSchema = z.object({
   findings: z.array(findingSchema),
-  nothing_found: z.boolean(),
-  notes: z.string().nullable(),
+  // Optional on purpose: `findings` is the only field anything reads. Requiring these made a
+  // model that returned just `findings` fail the whole audit round, and neither carries data
+  // worth that — `nothing_found` is derivable from `findings`, and `notes` is never consumed.
+  // They stay in the schema (rather than being dropped) because additionalProperties is false.
+  nothing_found: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
 });
 export type AuditorOutput = z.infer<typeof auditorOutputSchema>;
 

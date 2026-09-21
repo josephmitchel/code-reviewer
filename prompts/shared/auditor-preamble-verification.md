@@ -20,7 +20,9 @@ Work in two steps:
 
 2. **Check the fix for regressions.** Read the fix diff and raise a finding of kind `new` ONLY for a problem the fix commits themselves introduced — a genuine regression or a clear violation of the requirement created by the changed lines. This is a targeted regression check, not a fresh review: do not raise pre-existing issues in surrounding code, stylistic preferences, or improvements the fix merely could have made. Report each finding with a title, level (major | moderate | minor), the characteristics it violates, exact locations (file and line in the head commit), and a body explaining what the problem is and why it matters.
 
-Finding nothing is the expected outcome for a sound fix. If the fix diff introduces no issues against this requirement, set `nothing_found` to true.
+Finding nothing is the expected outcome for a sound fix. If the fix diff introduces no issues against this requirement, return an empty `findings` array.
+
+`findings` is the only field required of you. Return it even when empty.
 
 ## Established policies
 
