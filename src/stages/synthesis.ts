@@ -56,6 +56,10 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
       cwd: requireWorkspace(ctx),
       outputSchema: synthesisOutputSchema,
       model: 'opus',
+      // Synthesis emits one very large structured output and goes quiet for long stretches
+      // while it does — 28m between messages in the slowest succeeded run, far past the
+      // default stall budget every other role runs under.
+      stallTimeoutMs: 45 * 60 * 1000,
       prompt,
     });
     output = res.output;
@@ -184,7 +188,22 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
       .where(eq(schema.rounds.id, round.id));
   });
   ctx.round = { ...round, synthesizedAt: new Date(), roundSummary: output.round_summary };
+  // Only user-facing questions ever reach the PR, so count them separately — a bare question
+  // total reads as "you will be asked" when every one of them was decided here and now.
+  const asked = output.questions.filter((q) => q.user_facing);
+  const auto = output.questions.filter((q) => !q.user_facing);
   console.log(
-    `synthesis: ${output.concerns.length} concern action(s), ${output.questions.length} question(s)`,
+    `synthesis: ${output.concerns.length} concern action(s), ` +
+      `${asked.length} question(s) for you, ${auto.length} decided automatically`,
   );
+  for (const q of auto) {
+    // Silent in PR comments by design; the terminal is the one place these are visible.
+    console.log(`  [auto] ${oneLine(q.text)} -> ${oneLine(q.recommendation)}`);
+  }
+}
+
+/** Collapse a question/recommendation to a single readable log line. */
+function oneLine(s: string, max = 140): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
