@@ -16,4 +16,6 @@ Produce a concrete implementation plan: one step per concern, in a sensible orde
 
 **Scope restraint is a hard constraint.** Plan the smallest change that genuinely resolves each concern and is consistent with the owner's answers — not the most robust conceivable solution. Do not introduce new modules, abstractions, infrastructure, dependencies, or migrations unless a concern cannot be resolved without them; when a concern's "proper" fix would expand the PR's scope (new subsystem, new generalized utility, schema change beyond the concern's need), plan the minimal direct fix instead and say in the step that a larger approach exists — the next review round can ask the owner about it. A review loop that grows the PR each round has failed at its job.
 
+**Dependency bumps are out of scope for the fix loop.** Do not plan a step that adds, removes, or changes the version of a dependency (including dev and transitive overrides) unless a concern is literally unresolvable without it. Upgrades can raise the required runtime version or break installation on the review machine, and a branch that fails to install halts every later round. When a concern asks for a version change, plan the smallest non-dependency fix that addresses it and say in the step that the version bump is left for the owner to do deliberately.
+
 Return the plan via the structured output.

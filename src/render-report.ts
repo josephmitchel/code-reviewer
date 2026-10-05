@@ -13,7 +13,7 @@ export interface ReportConcern {
   gateBlocking: boolean;
   /** Full gate predicate: this concern currently counts against this review's gate. */
   blocking: boolean;
-  /** Fix held back behind an unanswered user-facing question. */
+  /** Has an unanswered user-facing question — no fixes run in this round until it is answered. */
   held: boolean;
 }
 
@@ -42,7 +42,7 @@ export interface ReportInput {
 const LEVEL_BADGE: Record<string, string> = { major: '🔴 major', moderate: '🟠 moderate', minor: '🟡 minor' };
 
 function statusLabel(c: ReportConcern): string {
-  if (c.held) return 'held (awaiting your answer)';
+  if (c.held) return 'awaiting your answer';
   if (!c.gateBlocking) return 'recorded (non-blocking)';
   return c.isPrior ? 'prior' : 'new';
 }
@@ -112,9 +112,8 @@ export function renderReport(input: ReportInput): string {
       lines.push(
         '---\n_Reply with numbered answers (`' +
           `${input.questions[0].ordinal}. <answer>` +
-          '`), or `go with your recommendations` to accept them all. Fixes for everything else are already ' +
-          'proceeding — your answers unblock the held concerns in the next round. ' +
-          'Answers are saved as repo policy and never re-asked._',
+          '`), or `go with your recommendations` to accept them all. No fixes are made until every ' +
+          'question here is answered. Answers are saved as repo policy and never re-asked._',
       );
     }
   } else {

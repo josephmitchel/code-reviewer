@@ -18,9 +18,3 @@ export async function pendingUserFacingQuestions(ctx: Ctx): Promise<QuestionRow[
     );
   return rows.sort((a, b) => a.ordinal - b.ordinal);
 }
-
-/** Concerns whose fix is held back behind an unanswered user-facing question. */
-export async function heldConcernIds(ctx: Ctx): Promise<Set<number>> {
-  const pending = await pendingUserFacingQuestions(ctx);
-  return new Set(pending.map((q) => q.concernId).filter((id): id is number => id !== null));
-}

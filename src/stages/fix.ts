@@ -6,7 +6,6 @@ import { fixPlanOutputSchema } from '../agents/schemas.js';
 import { remoteBranchSha } from '../workspace.js';
 import { renderPolicies } from './audit.js';
 import { reviewConcerns } from './report.js';
-import { heldConcernIds } from './questions.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
 
 async function renderAnswers(roundId: number): Promise<string> {
@@ -33,13 +32,10 @@ export async function runFixPlanning(ctx: Ctx): Promise<void> {
   const round = requireRound(ctx);
   if (round.plan) return;
 
-  // Skip concerns held behind an unanswered user-facing question (they get fixed in a later
-  // round once answered) and non-blocking verification-round discoveries (recorded for a
-  // future PR, never fixed in this one).
-  const held = await heldConcernIds(ctx);
-  const open = (await reviewConcerns(ctx)).filter(
-    (c) => c.status === 'open' && !held.has(c.id) && c.gateBlocking,
-  );
+  // Every user-facing question is answered before this stage runs (runAwaitAnswers blocks
+  // on them), so nothing is held back here. Non-blocking verification-round discoveries stay
+  // out of the plan — they are recorded for a future PR, never fixed in this one.
+  const open = (await reviewConcerns(ctx)).filter((c) => c.status === 'open' && c.gateBlocking);
   if (open.length === 0) return;
 
   const res = await runAgent({

@@ -4,6 +4,8 @@ Implement the following plan exactly. If a step turns out to be impossible as wr
 
 **Scope restraint is a hard constraint.** Implement each step with the smallest change that satisfies it — no new modules, abstractions, helpers, or migrations beyond what the plan names, no generalizing for hypothetical future needs, no fixing things the plan doesn't mention. If faithful implementation seems to require going beyond the plan, do the minimal version and note it in the commit body rather than building the larger thing.
 
+**Dependency changes must install under the repo's own constraints.** The next review round reinstalls this branch from scratch on the same machine with the repo's own settings (`engine-strict`, lockfile checks, peer-dependency checks, Node/runtime version). Never pass flags that bypass those checks (`--engine-strict=false`, `--legacy-peer-deps`, `--force`, `--ignore-engines`, `--no-verify`, or their equivalents in other package managers), never edit `.npmrc` or `engines` to make an install go through, and never hand-edit a lockfile. If a step's dependency change cannot be installed cleanly under those constraints, leave the dependency unchanged, implement whatever part of the step does not depend on it, and record in the commit body that the step was left undone and why. A branch the review environment cannot install breaks every later round.
+
 ## Plan
 
 {{PLAN}}

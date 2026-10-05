@@ -4,7 +4,6 @@ import { getCommentCreatedAt, listRepliesSince } from '../github.js';
 import { loadPrompt, runAgent } from '../agents/run-agent.js';
 import { answersOutputSchema } from '../agents/schemas.js';
 import { parseAnswers } from '../parse-answers.js';
-import { blockingConcerns } from './report.js';
 import { pendingUserFacingQuestions, type QuestionRow } from './questions.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
 
@@ -39,8 +38,8 @@ async function recordAnswer(ctx: Ctx, q: QuestionRow, answer: string, commentId:
 
 /**
  * One pass over PR replies since the oldest pending question's report: record any answers
- * found (partial replies count — each answered ordinal unblocks its concern independently).
- * Returns how many questions were answered.
+ * found (a partial reply still counts — each answered ordinal is banked as it arrives, the
+ * round just keeps waiting for the rest). Returns how many questions were answered.
  */
 async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number> {
   if (pending.length === 0) return 0;
@@ -124,49 +123,36 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
 }
 
 /**
- * Check for owner replies to user-facing questions (across all rounds of this review).
- * Never blocks while at least one blocking concern is actionable — fixes for everything
- * else proceed and held concerns wait for their answers in a later round. Only when EVERY
- * blocking concern is held behind an unanswered question does this poll until one arrives.
+ * Block until EVERY user-facing question of this review (any round) has an answer.
+ * Fixing while a question was still open let the fixer commit decisions the owner then
+ * contradicted, so nothing advances on partial answers: this polls the PR until the last
+ * one lands. Whether a question is attached to a concern makes no difference — an
+ * unattached question (an outside-world fact we cannot establish) holds the round too.
  */
 export async function runAwaitAnswers(ctx: Ctx): Promise<void> {
   let pending = await pendingUserFacingQuestions(ctx);
   if (pending.length === 0) return;
 
-  try {
-    await pollAnswersOnce(ctx, pending);
-  } catch (err) {
-    console.warn(`comment check failed (${String(err).split('\n')[0]}) — continuing`);
-  }
-  pending = await pendingUserFacingQuestions(ctx);
-  if (pending.length === 0) return;
-
-  const held = new Set(pending.map((q) => q.concernId).filter((id) => id !== null));
-  const blocking = await blockingConcerns(ctx);
-  const actionable = blocking.filter((c) => !held.has(c.id));
-  if (blocking.length === 0 || actionable.length > 0) {
-    console.log(
-      `${pending.length} user-facing question(s) still pending — proceeding with fixes for the other concerns`,
-    );
-    return;
-  }
-
-  console.log(
-    `all ${blocking.length} blocking concern(s) are waiting on your answers on PR #${ctx.review.prNumber} — polling…`,
-  );
+  let announced = -1;
   for (;;) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     try {
-      await pollAnswersOnce(ctx, await pendingUserFacingQuestions(ctx));
-      // Return only once an answer actually frees a blocking concern for fixing —
-      // fix planning must never run with nothing actionable.
-      const pendingNow = await pendingUserFacingQuestions(ctx);
-      const heldNow = new Set(pendingNow.map((q) => q.concernId).filter((id) => id !== null));
-      const blockingNow = await blockingConcerns(ctx);
-      if (blockingNow.length === 0 || blockingNow.some((c) => !heldNow.has(c.id))) return;
+      await pollAnswersOnce(ctx, pending);
+      pending = await pendingUserFacingQuestions(ctx);
+      if (pending.length === 0) {
+        console.log('all user-facing questions answered — proceeding to fixes');
+        return;
+      }
+      if (pending.length !== announced) {
+        console.log(
+          `${pending.length} user-facing question(s) awaiting your answer on PR #${ctx.review.prNumber} — ` +
+            `fixes are paused until every one is answered; polling every ${POLL_INTERVAL_MS / 1000}s…`,
+        );
+        announced = pending.length;
+      }
     } catch (err) {
       // Transient network/API failures must not kill a multi-hour wait — log and keep polling.
       console.warn(`comment poll failed (${String(err).split('\n')[0]}) — retrying in ${POLL_INTERVAL_MS / 1000}s`);
     }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }
