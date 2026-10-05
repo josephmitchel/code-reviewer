@@ -58,7 +58,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: ${{ inputs.node-version }}
         # No `cache: npm` here on purpose: setup-node resolves cache-dependency-path against the
