@@ -156,6 +156,11 @@ export async function hasGateStatus(repoSlug: string, sha: string): Promise<bool
   return statuses.some((s) => s.context === 'code-reviewer/gate' && s.state === 'success');
 }
 
+/** The repo's default branch — the ref a dispatch has to name, and not always `main`. */
+export async function getDefaultBranch(repoSlug: string): Promise<string> {
+  return (await ghJson<{ default_branch: string }>(['api', `repos/${repoSlug}`])).default_branch;
+}
+
 /**
  * Fire a `workflow_dispatch` so the next queued review starts at once instead of waiting for
  * the scheduled sweep. Dispatches are the one event type GitHub still delivers when the actor

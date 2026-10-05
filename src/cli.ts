@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
 import { appAuthConfigured, configureAppAuth, installationToken } from './gh-auth.js';
-import { dispatchWorkflow, getPr } from './github.js';
+import { dispatchWorkflow, getDefaultBranch, getPr } from './github.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
@@ -170,7 +170,10 @@ async function showNextQueued(slug: string): Promise<void> {
 async function handOffToQueue(slug: string, workflowFile: string): Promise<void> {
   const pr = await nextQueuedPr(slug);
   if (pr === null) return;
-  const ref = process.env.REVIEWER_DISPATCH_REF ?? 'main';
+  // Every project this reviewer is pointed at may name its default branch differently, so ask
+  // rather than assume: a dispatch to a ref that does not exist is rejected, and the queued PR
+  // would then wait for the scheduled sweep with nothing saying why.
+  const ref = process.env.REVIEWER_DISPATCH_REF?.trim() || (await getDefaultBranch(slug));
   await dispatchWorkflow(slug, workflowFile, ref);
   console.log(`dispatched ${workflowFile} on ${ref} for queued PR #${pr}`);
 }

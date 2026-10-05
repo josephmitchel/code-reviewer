@@ -42,8 +42,10 @@ inputs:
       starts at once rather than waiting for the sweep. Empty disables the hand-off.
     default: ''
   dispatch-ref:
-    description: Ref to dispatch that workflow on.
-    default: main
+    description: >-
+      Ref to dispatch that workflow on. Empty asks GitHub for the repo's default branch, which
+      is right for any project without naming a branch here.
+    default: ''
   node-version:
     description: Node version. Matches the version the reviewer is developed against.
     default: '24'
