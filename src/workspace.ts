@@ -73,6 +73,33 @@ export interface CommandResult {
   trimmedOutput: string | null;
 }
 
+/**
+ * Variables that belong to the reviewer and must never reach the reviewed repo's own commands.
+ * `npm ci` executes that repo's install scripts and its test suite is arbitrary code; neither
+ * has any business holding the App private key that can push to it, the credential that pays
+ * for the review, or a connection string to the reviewer's own database. The last one is not
+ * hypothetical: a repo whose tests read `DATABASE_URL` would point them at the reviewer's
+ * database, and only a `_test`-suffix guard in the repo under review stopped exactly that.
+ *
+ * Everything the reviewer sets for itself is `REVIEWER_`-prefixed, which `repoCommandEnv`
+ * strips wholesale; these are the ones that cannot be renamed because another tool defines them.
+ */
+const REVIEWER_ONLY_ENV = [
+  'DATABASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+];
+
+/** The environment a reviewed repo's own command gets: ours, minus anything that is ours. */
+export function repoCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...source, CI: 'true' };
+  for (const key of REVIEWER_ONLY_ENV) delete env[key];
+  for (const key of Object.keys(env)) if (key.startsWith('REVIEWER_')) delete env[key];
+  return env;
+}
+
 /** Run a repo command (setup or tests); returns pass/fail with trimmed output on failure. */
 export async function runRepoCommand(
   dir: string,
@@ -84,7 +111,7 @@ export async function runRepoCommand(
       cwd: dir,
       timeout: timeoutMs,
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, CI: 'true' },
+      env: repoCommandEnv(),
     });
     return { passed: true, trimmedOutput: null };
   } catch (err) {
