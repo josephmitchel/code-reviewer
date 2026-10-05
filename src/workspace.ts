@@ -32,7 +32,29 @@ export async function prepareWorkspace(
   await git(dir, ['checkout', '-B', branch, headSha]);
   await git(dir, ['reset', '--hard', headSha]);
   await git(dir, ['clean', '-fd']);
+  await ensureCommitIdentity(dir);
   return dir;
+}
+
+/**
+ * The fixer commits, and `git commit` with no configured identity fails — on a fresh CI
+ * runner there is no global one. Left alone that surfaces an hour into a round, after the
+ * fix has already been written, as a git error nobody reads. Set the identity from the
+ * environment when it is provided, and refuse the workspace now if there is still none.
+ */
+async function ensureCommitIdentity(dir: string): Promise<void> {
+  const name = process.env.REVIEWER_GIT_NAME;
+  const email = process.env.REVIEWER_GIT_EMAIL;
+  if (name) await git(dir, ['config', 'user.name', name]);
+  if (email) await git(dir, ['config', 'user.email', email]);
+  try {
+    await git(dir, ['config', '--get', 'user.email']);
+  } catch {
+    throw new Error(
+      'no git commit identity in this workspace — set REVIEWER_GIT_NAME and REVIEWER_GIT_EMAIL ' +
+        '(or a global git user.email) so the fixer can commit',
+    );
+  }
 }
 
 export async function remoteBranchSha(dir: string, branch: string): Promise<string> {

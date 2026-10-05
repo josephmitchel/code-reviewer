@@ -122,16 +122,30 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
   return answered;
 }
 
+export interface AwaitAnswersOptions {
+  /**
+   * Keep polling the PR until the last answer lands (a local run, where waiting is free).
+   * False checks once and reports back, for a CI run that is billed by the minute and whose
+   * next GitHub event will re-enter this stage anyway.
+   */
+  poll: boolean;
+}
+
 /**
- * Block until EVERY user-facing question of this review (any round) has an answer.
- * Fixing while a question was still open let the fixer commit decisions the owner then
- * contradicted, so nothing advances on partial answers: this polls the PR until the last
- * one lands. Whether a question is attached to a concern makes no difference — an
- * unattached question (an outside-world fact we cannot establish) holds the round too.
+ * Collect answers to EVERY user-facing question of this review (any round), and report
+ * whether they are all in. Fixing while a question was still open let the fixer commit
+ * decisions the owner then contradicted, so nothing advances on partial answers. Whether a
+ * question is attached to a concern makes no difference — an unattached question (an
+ * outside-world fact we cannot establish) holds the round too.
+ *
+ * Returns true when no user-facing question is left unanswered, i.e. when fixing may begin.
  */
-export async function runAwaitAnswers(ctx: Ctx): Promise<void> {
+export async function runAwaitAnswers(
+  ctx: Ctx,
+  options: AwaitAnswersOptions = { poll: true },
+): Promise<boolean> {
   let pending = await pendingUserFacingQuestions(ctx);
-  if (pending.length === 0) return;
+  if (pending.length === 0) return true;
 
   let announced = -1;
   for (;;) {
@@ -140,19 +154,25 @@ export async function runAwaitAnswers(ctx: Ctx): Promise<void> {
       pending = await pendingUserFacingQuestions(ctx);
       if (pending.length === 0) {
         console.log('all user-facing questions answered — proceeding to fixes');
-        return;
+        return true;
       }
       if (pending.length !== announced) {
         console.log(
           `${pending.length} user-facing question(s) awaiting your answer on PR #${ctx.review.prNumber} — ` +
-            `fixes are paused until every one is answered; polling every ${POLL_INTERVAL_MS / 1000}s…`,
+            `fixes are paused until every one is answered` +
+            (options.poll ? `; polling every ${POLL_INTERVAL_MS / 1000}s…` : ''),
         );
         announced = pending.length;
       }
     } catch (err) {
-      // Transient network/API failures must not kill a multi-hour wait — log and keep polling.
-      console.warn(`comment poll failed (${String(err).split('\n')[0]}) — retrying in ${POLL_INTERVAL_MS / 1000}s`);
+      // A failed check is not an answer: in CI it means this run learned nothing and the next
+      // event will try again, and locally that a multi-hour wait must survive a network blip.
+      console.warn(
+        `comment poll failed (${String(err).split('\n')[0]})` +
+          (options.poll ? ` — retrying in ${POLL_INTERVAL_MS / 1000}s` : ''),
+      );
     }
+    if (!options.poll) return false;
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 }

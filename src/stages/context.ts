@@ -26,7 +26,24 @@ export const AUDITOR_CHARACTERISTICS = [
   'testing',
 ] as const;
 
-export const AGENT_CONCURRENCY = 10;
+/**
+ * Auditors run in parallel, one Claude Code subprocess each. Ten suits a laptop; a small CI
+ * runner sharing its memory with the reviewed repo's test suite may not, so the ceiling is
+ * settable without a code change.
+ */
+export const AGENT_CONCURRENCY = positiveIntEnv('REVIEWER_AGENT_CONCURRENCY', 10);
+
+/** Reads a positive integer from the environment, ignoring anything that is not one. */
+export function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    console.warn(`${name}=${raw} is not a positive integer — using ${fallback}`);
+    return fallback;
+  }
+  return n;
+}
 
 /** Hard cap on rounds per review; at the cap the gate passes with warnings instead of looping. */
 export const MAX_ROUNDS = 3;

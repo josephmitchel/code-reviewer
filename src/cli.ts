@@ -1,13 +1,17 @@
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
+import { getPr } from './github.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
 
 Usage:
-  code-reviewer run <owner/repo> <pr#>          run (or resume) the review loop for a PR
+  code-reviewer run <owner/repo> <pr#> [--once] run (or resume) the review loop for a PR
+      --once                                    return instead of waiting for answers or the
+                                                review slot (for CI; prints the outcome)
+  code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer repo add <owner/repo> [opts]    register a repo
       --setup <cmd>                             setup command (e.g. "npm ci")
       --tests <name=cmd>                        test suite (repeatable)
@@ -22,9 +26,17 @@ async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   switch (cmd) {
     case 'run': {
-      const [slug, pr] = rest;
-      if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
-      await runReview(slug, Number(pr));
+      const flags = rest.filter((a) => a.startsWith('--'));
+      const [slug, pr] = rest.filter((a) => !a.startsWith('--'));
+      if (!slug || !/^\d+$/.test(pr ?? '') || flags.some((f) => f !== '--once')) return usageExit();
+      const outcome = await runReview(slug, Number(pr), { oneShot: flags.includes('--once') });
+      console.log(`outcome: ${outcome}`);
+      break;
+    }
+    case 'next': {
+      const [slug] = rest;
+      if (!slug) return usageExit();
+      await showNextQueued(slug);
       break;
     }
     case 'repo': {
@@ -94,6 +106,60 @@ async function repoUpsert(mode: 'add' | 'set', slug: string, argv: string[]): Pr
     await db.update(schema.repos).set(patch).where(eq(schema.repos.id, existing.id));
     console.log(`updated ${slug}`);
   }
+}
+
+/**
+ * Prints the PR number of the review that should run next, and nothing else — the Actions
+ * workflow dispatches whatever lands on stdout, so every diagnostic goes to stderr.
+ *
+ * A review turned away by `claimReviewSlot` is left in `pending`, so that is the queue. It is
+ * drained oldest first, and a queued PR that has since been closed is retired here rather
+ * than costing a whole workflow run to discover it in intake.
+ */
+async function showNextQueued(slug: string): Promise<void> {
+  const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, slug));
+  if (!repo) throw new Error(`repo ${slug} not registered`);
+
+  const active = await db
+    .select({ pr: schema.reviews.prNumber, state: schema.reviews.state })
+    .from(schema.reviews)
+    .where(
+      and(
+        eq(schema.reviews.repoId, repo.id),
+        notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
+      ),
+    );
+  if (active.length > 0) {
+    // Dispatching now would only queue again, and the holder dispatches on its way out.
+    console.error(`PR #${active[0].pr} still holds the slot (${active[0].state}) — nothing to dispatch`);
+    return;
+  }
+
+  const queued = await db
+    .select()
+    .from(schema.reviews)
+    .where(and(eq(schema.reviews.repoId, repo.id), eq(schema.reviews.state, 'pending')))
+    .orderBy(schema.reviews.createdAt);
+
+  for (const review of queued) {
+    let prState: string;
+    try {
+      prState = (await getPr(slug, review.prNumber)).state;
+    } catch (err) {
+      console.error(`could not check PR #${review.prNumber} (${String(err).split('\n')[0]}) — skipping`);
+      continue;
+    }
+    if (prState === 'open') {
+      console.log(String(review.prNumber));
+      return;
+    }
+    await db
+      .update(schema.reviews)
+      .set({ state: 'failed', error: `queued but PR is ${prState}`, updatedAt: new Date() })
+      .where(eq(schema.reviews.id, review.id));
+    console.error(`retired queued review for PR #${review.prNumber} (PR is ${prState})`);
+  }
+  console.error(`no queued review for ${slug}`);
 }
 
 async function showStatus(slug?: string): Promise<void> {

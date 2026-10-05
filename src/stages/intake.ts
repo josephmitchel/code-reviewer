@@ -4,55 +4,90 @@ import { getPr } from '../github.js';
 import { prepareWorkspace, runRepoCommand } from '../workspace.js';
 import { MAX_ROUNDS, type Ctx } from './context.js';
 
+export interface ReviewSlotConflict {
+  reviewId: number;
+  pr: number;
+  state: string;
+}
+
+/** Either this review holds the repo's review slot, or the review that does is named. */
+export type SlotClaim =
+  | { ok: true }
+  | { ok: false; conflict: ReviewSlotConflict; reason: 'open' | 'unknown' };
+
 /**
  * One active review per repo — but a run killed mid-pipeline leaves its review parked in a
  * non-terminal state forever, blocking every later PR. A review whose PR is no longer open
- * can never make progress (its own intake would reject the closed PR), so retire it here
- * instead of making the owner reset it by hand. Anything still open really is a conflict.
+ * can never make progress (its own intake would reject the closed PR), so it is retired
+ * rather than left for the owner to reset by hand. Anything still open really is a conflict,
+ * and so is a PR whose state cannot be fetched: never steal a slot that cannot be proven free.
+ *
+ * Pure so the precedence is testable without a database or the GitHub API.
  */
-async function releaseStaleReviews(ctx: Ctx): Promise<void> {
-  const conflicting = await db
-    .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
-    .from(schema.reviews)
-    .where(
-      and(
-        eq(schema.reviews.repoId, ctx.repo.id),
-        ne(schema.reviews.id, ctx.review.id),
-        notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
-      ),
-    );
+export function classifyConflicts(
+  conflicts: ReviewSlotConflict[],
+  prStateOf: (pr: number) => string | null,
+): {
+  retire: Array<ReviewSlotConflict & { prState: string }>;
+  block: { conflict: ReviewSlotConflict; reason: 'open' | 'unknown' } | null;
+} {
+  const retire: Array<ReviewSlotConflict & { prState: string }> = [];
+  for (const conflict of conflicts) {
+    const prState = prStateOf(conflict.pr);
+    if (prState === null) return { retire, block: { conflict, reason: 'unknown' } };
+    if (prState === 'open') return { retire, block: { conflict, reason: 'open' } };
+    retire.push({ ...conflict, prState });
+  }
+  return { retire, block: null };
+}
 
-  for (const other of conflicting) {
-    let prState: string;
+/**
+ * Take the repo's review slot for this review, retiring dead holders on the way. Called
+ * before the review leaves `pending`, because a review that has already advanced out of it
+ * would be counted among the conflicts it is being tested against — and because `pending` is
+ * where a turned-away review waits: it blocks nobody, and `code-reviewer next` finds it there.
+ */
+export async function claimReviewSlot(ctx: Ctx): Promise<SlotClaim> {
+  const conflicts: ReviewSlotConflict[] = (
+    await db
+      .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
+      .from(schema.reviews)
+      .where(
+        and(
+          eq(schema.reviews.repoId, ctx.repo.id),
+          ne(schema.reviews.id, ctx.review.id),
+          notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
+        ),
+      )
+  ).map((r) => ({ reviewId: r.id, pr: r.pr, state: r.state }));
+  if (conflicts.length === 0) return { ok: true };
+
+  const prStates = new Map<number, string | null>();
+  for (const conflict of conflicts) {
     try {
-      prState = (await getPr(ctx.repo.slug, other.pr)).state;
+      prStates.set(conflict.pr, (await getPr(ctx.repo.slug, conflict.pr)).state);
     } catch (err) {
-      // Can't prove it's dead — treat it as a live conflict rather than stealing its slot.
-      throw new Error(
-        `another review is active for ${ctx.repo.slug} (PR #${other.pr}) and its state could not be ` +
-          `checked (${String(err).split('\n')[0]}) — one active review per repo`,
-      );
+      console.warn(`could not check PR #${conflict.pr} (${String(err).split('\n')[0]})`);
+      prStates.set(conflict.pr, null);
     }
-    if (prState === 'open') {
-      throw new Error(
-        `another review is active for ${ctx.repo.slug} (PR #${other.pr}) — one active review per repo`,
-      );
-    }
+  }
+
+  const { retire, block } = classifyConflicts(conflicts, (pr) => prStates.get(pr) ?? null);
+  for (const stale of retire) {
     await db
       .update(schema.reviews)
       .set({
         state: 'failed',
-        error: `abandoned in state ${other.state}: PR #${other.pr} is ${prState}`,
+        error: `abandoned in state ${stale.state}: PR #${stale.pr} is ${stale.prState}`,
         updatedAt: new Date(),
       })
-      .where(eq(schema.reviews.id, other.id));
-    console.log(`released stale review for PR #${other.pr} (was ${other.state}, PR is ${prState})`);
+      .where(eq(schema.reviews.id, stale.reviewId));
+    console.log(`released stale review for PR #${stale.pr} (was ${stale.state}, PR is ${stale.prState})`);
   }
+  return block ? { ok: false, ...block } : { ok: true };
 }
 
 export async function runIntake(ctx: Ctx): Promise<void> {
-  await releaseStaleReviews(ctx);
-
   const pr = await getPr(ctx.repo.slug, ctx.review.prNumber);
   if (pr.isFork) throw new Error('fork PRs are not supported (no push access to the fork branch)');
   if (pr.state !== 'open') throw new Error(`PR #${ctx.review.prNumber} is ${pr.state}, not open`);

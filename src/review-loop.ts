@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from './db/client.js';
 import { getPr } from './github.js';
 import { prepareWorkspace, workspacePath } from './workspace.js';
-import { runIntake } from './stages/intake.js';
+import { claimReviewSlot, runIntake } from './stages/intake.js';
 import { runAudit } from './stages/audit.js';
 import { runSynthesis } from './stages/synthesis.js';
 import { runReport, blockingConcerns } from './stages/report.js';
@@ -50,8 +50,46 @@ async function loadCtx(repoSlug: string, prNumber: number): Promise<Ctx> {
   return { repo, review, round, workspaceDir: null };
 }
 
-export async function runReview(repoSlug: string, prNumber: number): Promise<void> {
+/** Where a run left the review: finished, waiting on the owner, or waiting for the slot. */
+export type ReviewOutcome = 'passed' | 'awaiting_answers' | 'queued';
+
+export interface RunReviewOptions {
+  /**
+   * Return at the first point the review cannot advance on its own instead of waiting it out.
+   * A CI run is billed for every minute it holds a runner, so a review that needs an answer
+   * (or the repo's review slot) exits and is re-entered by the next GitHub event — the state
+   * in Postgres is the entire handoff. Local runs leave this off and wait.
+   */
+  oneShot?: boolean;
+}
+
+export async function runReview(
+  repoSlug: string,
+  prNumber: number,
+  options: RunReviewOptions = {},
+): Promise<ReviewOutcome> {
+  const oneShot = options.oneShot ?? false;
   const ctx = await loadCtx(repoSlug, prNumber);
+
+  // Claim the repo's review slot before this review leaves `pending`: a review that has
+  // already advanced past it counts among the conflicts it would be tested against, and
+  // `pending` is where a turned-away review waits without blocking anyone.
+  if (ctx.review.state === 'pending' || ctx.review.state === 'failed') {
+    const claim = await claimReviewSlot(ctx);
+    if (!claim.ok) {
+      console.log(
+        `review for PR #${claim.conflict.pr} holds the slot (state ${claim.conflict.state})` +
+          (claim.reason === 'unknown' ? ' and its PR state could not be checked' : '') +
+          ` — PR #${prNumber} stays queued`,
+      );
+      // A retry that cannot start belongs in the queue, not back in `failed`: `next` only
+      // looks at `pending`, so leaving it failed would quietly drop it off the queue for good.
+      // The error text stays, so `status` still shows what went wrong last time.
+      if (ctx.review.state === 'failed') await setState(ctx, 'pending', ctx.review.error);
+      return 'queued';
+    }
+  }
+
   if (ctx.review.state === 'failed') {
     console.log(`previous run failed (${ctx.review.error ?? 'no error recorded'}) — retrying`);
     await setState(ctx, await inferRetryState(ctx));
@@ -93,10 +131,12 @@ export async function runReview(repoSlug: string, prNumber: number): Promise<voi
           // rather than announcing a wait that resolves immediately.
           await setState(ctx, await stateAfterReport(ctx));
           break;
-        case 'awaiting_answers':
-          await runAwaitAnswers(ctx);
+        case 'awaiting_answers': {
+          const answered = await runAwaitAnswers(ctx, { poll: !oneShot });
+          if (!answered) return 'awaiting_answers';
           await setState(ctx, 'fix_planning');
           break;
+        }
         case 'fix_planning':
           await runFixPlanning(ctx);
           await setState(ctx, 'fixing');
@@ -122,6 +162,7 @@ export async function runReview(repoSlug: string, prNumber: number): Promise<voi
     }
   }
   console.log(`\nreview passed — PR #${prNumber} gate is green.`);
+  return 'passed';
 }
 
 /** Only wait on the owner when there is actually an unanswered user-facing question. */
