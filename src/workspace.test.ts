@@ -57,3 +57,54 @@ describe('repoCommandEnv', () => {
     );
   });
 });
+
+/**
+ * The carrier exists because the first version of repo-env shell-exported the lines in the action,
+ * which put repo-supplied names into the REVIEWER's own environment — a repo could name
+ * DATABASE_URL and repoint the reviewer at a database of its choosing. Applying them only to the
+ * child both closes that and makes the feature work: the names a repo most wants to set for its
+ * own suites are exactly the ones on the strip list.
+ */
+describe('repoCommandEnv with a repo-env carrier', () => {
+  const withCarrier = (carrier: string) =>
+    repoCommandEnv({
+      PATH: '/usr/bin',
+      DATABASE_URL: 'postgresql://reviewer/neondb',
+      REVIEWER_APP_PRIVATE_KEY: 'secret',
+      REVIEWER_REPO_ENV: carrier,
+    });
+
+  it('passes the repo its own variables', () => {
+    const env = withCarrier('TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/app_test');
+    expect(env.TEST_DATABASE_URL).toBe('postgresql://postgres:postgres@localhost:5432/app_test');
+  });
+
+  it('lets a repo set a name that is otherwise stripped, with the reviewer\'s value gone', () => {
+    const env = withCarrier('DATABASE_URL=postgresql://localhost:5432/app_test');
+    expect(env.DATABASE_URL).toBe('postgresql://localhost:5432/app_test');
+    expect(env.DATABASE_URL).not.toContain('neondb');
+  });
+
+  it('never leaks the carrier itself, nor the credentials beside it', () => {
+    const env = withCarrier('FOO=bar');
+    expect(env).not.toHaveProperty('REVIEWER_REPO_ENV');
+    expect(env).not.toHaveProperty('REVIEWER_APP_PRIVATE_KEY');
+  });
+
+  it('keeps values containing = and spaces intact', () => {
+    const env = withCarrier('URL=postgres://h/db?a=1&b=2\nMSG=two words');
+    expect(env.URL).toBe('postgres://h/db?a=1&b=2');
+    expect(env.MSG).toBe('two words');
+  });
+
+  it('skips blanks and comments, and survives a malformed line', () => {
+    const env = withCarrier('\n# a comment\n=novalue\nGOOD=yes\n');
+    expect(env.GOOD).toBe('yes');
+    // chai cannot take an empty property path, so check the key set directly.
+    expect(Object.keys(env)).not.toContain('');
+  });
+
+  it('is a no-op when no carrier is set', () => {
+    expect(repoCommandEnv({ PATH: '/usr/bin' }).PATH).toBe('/usr/bin');
+  });
+});

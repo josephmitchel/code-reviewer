@@ -119,17 +119,14 @@ runs:
         REVIEWER_DISPATCH_REF: ${{ inputs.dispatch-ref }}
         REPO: ${{ inputs.repo }}
         PR: ${{ inputs.pr }}
-        REPO_ENV: ${{ inputs.repo-env }}
+        # Carried as one variable and applied only to the reviewed repo's child processes. It is
+        # deliberately NOT exported here: shell-exporting it put repo-supplied names into the
+        # reviewer's own environment, where `DATABASE_URL` would have repointed the reviewer.
+        REVIEWER_REPO_ENV: ${{ inputs.repo-env }}
       # Every child process inherits this environment, which is how the fixer's `git push` reaches
       # the credential helper with the App credentials it needs.
       run: |
         set -euo pipefail
-        # Exported before the reviewer starts so they reach the reviewed repo's setup and test
-        # commands, which inherit this environment minus the reviewer's own credentials.
-        while IFS= read -r line; do
-          case "$line" in ''|'#'*) continue ;; esac
-          export "$line"
-        done <<< "$REPO_ENV"
         if [ -z "$PR" ]; then
           PR="$(node bin/code-reviewer.mjs next "$REPO")"
         fi

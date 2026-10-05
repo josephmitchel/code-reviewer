@@ -26,6 +26,7 @@ export interface PrInfo {
   baseSha: string;
   headRef: string;
   isFork: boolean;
+  isDraft: boolean;
   state: string;
   changedFiles: string[];
 }
@@ -35,6 +36,7 @@ export async function getPr(repoSlug: string, prNumber: number): Promise<PrInfo>
     head: { sha: string; ref: string; repo: { full_name: string } | null };
     base: { sha: string };
     state: string;
+    draft?: boolean;
   }>(['api', `repos/${repoSlug}/pulls/${prNumber}`]);
   const files = await ghJson<Array<{ filename: string }>>([
     'api',
@@ -46,6 +48,7 @@ export async function getPr(repoSlug: string, prNumber: number): Promise<PrInfo>
     baseSha: pr.base.sha,
     headRef: pr.head.ref,
     isFork: pr.head.repo === null || pr.head.repo.full_name !== repoSlug,
+    isDraft: pr.draft === true,
     state: pr.state,
     changedFiles: files.map((f) => f.filename),
   };
@@ -154,6 +157,14 @@ export async function hasGateStatus(repoSlug: string, sha: string): Promise<bool
     `repos/${repoSlug}/commits/${sha}/statuses`,
   ]);
   return statuses.some((s) => s.context === 'code-reviewer/gate' && s.state === 'success');
+}
+
+/** Open PR numbers, oldest first — what the sweep reconciles the database against. */
+export async function listOpenPrNumbers(repoSlug: string): Promise<number[]> {
+  const prs = await ghJson<Array<{ number: number }>>([
+    'pr', 'list', '-R', repoSlug, '--state', 'open', '--json', 'number', '--limit', '100',
+  ]);
+  return prs.map((p) => p.number).sort((a, b) => a - b);
 }
 
 /** The repo's default branch — the ref a dispatch has to name, and not always `main`. */

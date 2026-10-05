@@ -82,10 +82,12 @@ export async function runReview(
           (claim.reason === 'unknown' ? ' and its PR state could not be checked' : '') +
           ` — PR #${prNumber} stays queued`,
       );
-      // A retry that cannot start belongs in the queue, not back in `failed`: `next` only
-      // looks at `pending`, so leaving it failed would quietly drop it off the queue for good.
-      // The error text stays, so `status` still shows what went wrong last time.
-      if (ctx.review.state === 'failed') await setState(ctx, 'pending', ctx.review.error);
+      // Deliberately leave a turned-away `failed` review in `failed`. Moving it to `pending` to
+      // get it back in the queue looked kind and was catastrophic: `failed` is the ONLY marker
+      // that makes the next run consult `inferRetryState`, so a review downgraded to `pending`
+      // restarts at intake, opens a fresh verification round against its own unchanged head,
+      // audits an empty diff, burns the round cap and gates GREEN over concerns nobody fixed.
+      // A failed review waits for a comment on its PR instead, which re-enters it by number.
       return 'queued';
     }
   }

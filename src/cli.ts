@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util';
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
 import { appAuthConfigured, configureAppAuth, installationToken } from './gh-auth.js';
-import { dispatchWorkflow, getDefaultBranch, getPr } from './github.js';
+import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
+import { resolveSlot } from './stages/intake.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
@@ -182,18 +183,14 @@ async function nextQueuedPr(slug: string): Promise<number | null> {
   const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, slug));
   if (!repo) throw new Error(`repo ${slug} not registered`);
 
-  const active = await db
-    .select({ pr: schema.reviews.prNumber, state: schema.reviews.state })
-    .from(schema.reviews)
-    .where(
-      and(
-        eq(schema.reviews.repoId, repo.id),
-        notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
-      ),
+  // Asking only whether a non-terminal review exists is not enough: a holder whose PR has since
+  // been closed is dead (nothing re-enters it, since `closed` is not a trigger) and would block
+  // the queue forever. resolveSlot retires those, exactly as claiming the slot does.
+  const slot = await resolveSlot(repo.id, slug, null);
+  if (!slot.ok) {
+    console.error(
+      `PR #${slot.conflict.pr} still holds the slot (${slot.conflict.state}) — nothing to dispatch`,
     );
-  if (active.length > 0) {
-    // Dispatching now would only queue again, and the holder dispatches on its way out.
-    console.error(`PR #${active[0].pr} still holds the slot (${active[0].state}) — nothing to dispatch`);
     return null;
   }
 
@@ -217,6 +214,28 @@ async function nextQueuedPr(slug: string): Promise<number | null> {
       .set({ state: 'failed', error: `queued but PR is ${prState}`, updatedAt: new Date() })
       .where(eq(schema.reviews.id, review.id));
     console.error(`retired queued review for PR #${review.prNumber} (PR is ${prState})`);
+  }
+  // Nothing queued in the database is not the same as nothing to do. A run can be cancelled
+  // before it ever executes — the concurrency group keeps exactly one pending run, so a third
+  // event cancels the second — and that PR then has no review row at all, with no further event
+  // coming. The sweep is the only thing that notices, so it reconciles against GitHub.
+  const known = new Set(
+    (
+      await db
+        .select({ pr: schema.reviews.prNumber })
+        .from(schema.reviews)
+        .where(eq(schema.reviews.repoId, repo.id))
+    ).map((r) => r.pr),
+  );
+  try {
+    for (const pr of await listOpenPrNumbers(slug)) {
+      if (!known.has(pr)) {
+        console.error(`PR #${pr} is open with no review of its own — enrolling it`);
+        return pr;
+      }
+    }
+  } catch (err) {
+    console.error(`could not list open PRs (${String(err).split('\n')[0]})`);
   }
   console.error(`no queued review for ${slug}`);
   return null;

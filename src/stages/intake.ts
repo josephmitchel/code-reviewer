@@ -1,4 +1,4 @@
-import { and, eq, ne, notInArray } from 'drizzle-orm';
+import { and, eq, notInArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { getPr } from '../github.js';
 import { prepareWorkspace, runRepoCommand } from '../workspace.js';
@@ -48,24 +48,40 @@ export function classifyConflicts(
  * where a turned-away review waits: it blocks nobody, and `code-reviewer next` finds it there.
  */
 export async function claimReviewSlot(ctx: Ctx): Promise<SlotClaim> {
-  const conflicts: ReviewSlotConflict[] = (
-    await db
-      .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
-      .from(schema.reviews)
-      .where(
-        and(
-          eq(schema.reviews.repoId, ctx.repo.id),
-          ne(schema.reviews.id, ctx.review.id),
-          notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
-        ),
-      )
-  ).map((r) => ({ reviewId: r.id, pr: r.pr, state: r.state }));
+  return resolveSlot(ctx.repo.id, ctx.repo.slug, ctx.review.id);
+}
+
+/**
+ * Who holds the repo's review slot, after retiring any holder that is provably dead.
+ *
+ * Both callers need the retirement, not just the answer: the queue (`code-reviewer next`) used to
+ * ask only whether a non-terminal review existed, so a holder whose PR was closed — and `closed`
+ * is not one of the workflow's triggers, so nothing re-enters it — blocked every queued PR for
+ * good, with the scheduled sweep reporting "still holds the slot" forever.
+ */
+export async function resolveSlot(
+  repoId: number,
+  repoSlug: string,
+  excludeReviewId: number | null,
+): Promise<SlotClaim> {
+  const rows = await db
+    .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
+    .from(schema.reviews)
+    .where(
+      and(
+        eq(schema.reviews.repoId, repoId),
+        notInArray(schema.reviews.state, ['passed', 'failed', 'pending']),
+      ),
+    );
+  const conflicts: ReviewSlotConflict[] = rows
+    .filter((r) => r.id !== excludeReviewId)
+    .map((r) => ({ reviewId: r.id, pr: r.pr, state: r.state }));
   if (conflicts.length === 0) return { ok: true };
 
   const prStates = new Map<number, string | null>();
   for (const conflict of conflicts) {
     try {
-      prStates.set(conflict.pr, (await getPr(ctx.repo.slug, conflict.pr)).state);
+      prStates.set(conflict.pr, (await getPr(repoSlug, conflict.pr)).state);
     } catch (err) {
       console.warn(`could not check PR #${conflict.pr} (${String(err).split('\n')[0]})`);
       prStates.set(conflict.pr, null);
@@ -91,6 +107,10 @@ export async function runIntake(ctx: Ctx): Promise<void> {
   const pr = await getPr(ctx.repo.slug, ctx.review.prNumber);
   if (pr.isFork) throw new Error('fork PRs are not supported (no push access to the fork branch)');
   if (pr.state !== 'open') throw new Error(`PR #${ctx.review.prNumber} is ${pr.state}, not open`);
+  // Checked here rather than in the workflow's `if`, because the issue_comment payload carries no
+  // draft flag at all — so a comment on a draft would otherwise take the repo's review slot and
+  // spend a full round on work its author has said is not ready.
+  if (pr.isDraft) throw new Error(`PR #${ctx.review.prNumber} is a draft — not reviewed until ready`);
 
   // Reuse the current round only if it's for this same head SHA and hasn't finished intake.
   let round = ctx.round;

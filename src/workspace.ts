@@ -92,11 +92,33 @@ const REVIEWER_ONLY_ENV = [
   'GITHUB_TOKEN',
 ];
 
+/**
+ * Variables the reviewed repo's own commands need, carried as newline-separated KEY=VALUE lines
+ * (a database URL for its test suite, say). They arrive in ONE variable and are applied only to
+ * the child's environment — never exported into the reviewer's own process, which is what the
+ * first version of this did: a repo could then name `DATABASE_URL` or any `REVIEWER_*` variable
+ * and repoint the reviewer at a database of its choosing.
+ */
+const REPO_ENV_CARRIER = 'REVIEWER_REPO_ENV';
+
 /** The environment a reviewed repo's own command gets: ours, minus anything that is ours. */
 export function repoCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source, CI: 'true' };
   for (const key of REVIEWER_ONLY_ENV) delete env[key];
   for (const key of Object.keys(env)) if (key.startsWith('REVIEWER_')) delete env[key];
+
+  // Applied last, so a repo CAN legitimately set a name on the strip list for its own commands —
+  // which is the point — without that name ever having existed in the reviewer's environment.
+  for (const line of (source[REPO_ENV_CARRIER] ?? '').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const at = trimmed.indexOf('=');
+    if (at < 1) {
+      console.warn(`ignoring malformed repo-env line: ${trimmed.slice(0, 40)}`);
+      continue;
+    }
+    env[trimmed.slice(0, at)] = trimmed.slice(at + 1);
+  }
   return env;
 }
 
