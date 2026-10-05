@@ -1,10 +1,19 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { appAuthConfigured, installationToken } from './gh-auth.js';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Every call re-checks the token rather than capturing one at startup: in CI the credential is
+ * an App installation token that expires inside the length of a single round. Locally there are
+ * no App credentials and `gh` uses its own login, exactly as before.
+ */
 async function gh(args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('gh', args, { maxBuffer: 32 * 1024 * 1024 });
+  const env = appAuthConfigured()
+    ? { ...process.env, GH_TOKEN: await installationToken() }
+    : process.env;
+  const { stdout } = await execFileAsync('gh', args, { maxBuffer: 32 * 1024 * 1024, env });
   return stdout;
 }
 
@@ -145,6 +154,22 @@ export async function hasGateStatus(repoSlug: string, sha: string): Promise<bool
     `repos/${repoSlug}/commits/${sha}/statuses`,
   ]);
   return statuses.some((s) => s.context === 'code-reviewer/gate' && s.state === 'success');
+}
+
+/**
+ * Fire a `workflow_dispatch` so the next queued review starts at once instead of waiting for
+ * the scheduled sweep. Dispatches are the one event type GitHub still delivers when the actor
+ * is a token it would otherwise suppress, so this chain cannot be broken by loop protection.
+ */
+export async function dispatchWorkflow(repoSlug: string, workflowFile: string, ref: string): Promise<void> {
+  await gh([
+    'api',
+    '-X',
+    'POST',
+    `repos/${repoSlug}/actions/workflows/${workflowFile}/dispatches`,
+    '-f',
+    `ref=${ref}`,
+  ]);
 }
 
 export async function getViewerLogin(): Promise<string> {

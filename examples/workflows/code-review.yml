@@ -1,0 +1,68 @@
+# Copy this into the repository you want reviewed, as .github/workflows/code-review.yml.
+#
+# Four triggers, one job:
+#   pull_request    a new (or newly ready) PR starts a review
+#   issue_comment   your reply to the reviewer's questions resumes it
+#   workflow_dispatch  a finishing review hands the slot to the next queued PR
+#   schedule        a safety net, in case a hand-off was missed
+#
+# Your own pushes deliberately do NOT trigger a round: the reviewer keeps auditing the SHA the
+# current round started on, and picks up the new head when that round ends.
+name: Code Reviewer
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review. Leave empty to take the next queued review.
+        required: false
+  schedule:
+    - cron: '17 */6 * * *'
+
+# Everything authenticates as the GitHub App, so the job's own token needs nothing at all.
+permissions: {}
+
+# One review at a time per repo — the reviewer enforces that in its database too, but there is
+# no row locking, so two events arriving together must not run concurrently.
+concurrency:
+  group: code-reviewer-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    # A comment counts only when it is on a pull request and not from a bot: without the second
+    # test the reviewer's own report would trigger the next run, forever.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.comment.user.type != 'Bot') ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # Under GitHub's 6h hard kill, so a wedged run fails with a log instead of vanishing.
+    timeout-minutes: 330
+    steps:
+      - name: Pick the pull request
+        id: pr
+        env:
+          DISPATCH_PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)      echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT" ;;
+            issue_comment)     echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) echo "number=${DISPATCH_PR//[^0-9]/}" >> "$GITHUB_OUTPUT" ;;
+            *)                 echo 'number=' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: josephmitchel/code-reviewer@main
+        with:
+          pr: ${{ steps.pr.outputs.number }}
+          database-url: ${{ secrets.DATABASE_URL }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          dispatch-workflow: code-review.yml

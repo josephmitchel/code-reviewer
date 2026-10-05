@@ -1,0 +1,127 @@
+name: Code Reviewer
+description: >-
+  Multi-agent PR review: audits a pull request against the ISO/IEC 25010 quality
+  characteristics, asks the owner questions on the PR, pushes fixes once they are answered,
+  verifies them, and gates the PR with a commit status.
+
+inputs:
+  repo:
+    description: The owner/repo under review. Defaults to the calling repository.
+    default: ${{ github.repository }}
+  pr:
+    description: >-
+      PR number to review. Leave empty to take the next queued review instead, which is what
+      the scheduled sweep does.
+    default: ''
+  database-url:
+    description: Postgres connection string holding the reviewer's state.
+    required: true
+  claude-code-oauth-token:
+    description: Token from `claude setup-token`. Bills the agents to your Claude subscription.
+    required: true
+  app-client-id:
+    description: Client ID of the GitHub App the reviewer acts as.
+    required: true
+  app-private-key:
+    description: Private key (PEM) of that GitHub App.
+    required: true
+  agent-concurrency:
+    description: >-
+      How many auditor agents run at once. Each is a Claude Code subprocess, and they share the
+      runner with the reviewed repo's test suite, so this is well below the local default of 10.
+    default: '5'
+  git-name:
+    description: Commit author name for the fixer's commits.
+    default: code-reviewer[bot]
+  git-email:
+    description: Commit author email for the fixer's commits.
+    default: code-reviewer[bot]@users.noreply.github.com
+  dispatch-workflow:
+    description: >-
+      Workflow filename to dispatch when a review finishes and the slot frees, so a queued PR
+      starts at once rather than waiting for the sweep. Empty disables the hand-off.
+    default: ''
+  dispatch-ref:
+    description: Ref to dispatch that workflow on.
+    default: main
+  node-version:
+    description: Node version. Matches the version the reviewer is developed against.
+    default: '24'
+
+outputs:
+  outcome:
+    description: passed | awaiting_answers | queued | skipped
+    value: ${{ steps.review.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: ${{ github.action_path }}/package-lock.json
+
+    - name: Install the reviewer
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Apply database migrations
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        DATABASE_URL: ${{ inputs.database-url }}
+      # The dump carried the migration journal over, so on an up-to-date database this is a no-op.
+      run: npx drizzle-kit migrate
+
+    - name: Configure git for the fixer
+      shell: bash
+      env:
+        GIT_NAME: ${{ inputs.git-name }}
+        GIT_EMAIL: ${{ inputs.git-email }}
+      # The fixer agent runs `git commit` and `git push` itself. The identity has to exist before
+      # it does, and the credential helper has to be able to mint a token *then* — an App token
+      # lives an hour and a round can run longer, so nothing is stored here. `bin/code-reviewer.mjs`
+      # is not executable in git, hence the explicit `node`.
+      run: |
+        set -euo pipefail
+        git config --global user.name "$GIT_NAME"
+        git config --global user.email "$GIT_EMAIL"
+        git config --global credential.helper \
+          "!node '${{ github.action_path }}/bin/code-reviewer.mjs' git-credential"
+
+    - name: Review
+      id: review
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        DATABASE_URL: ${{ inputs.database-url }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        REVIEWER_APP_CLIENT_ID: ${{ inputs.app-client-id }}
+        REVIEWER_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        REVIEWER_APP_INSTALL_REPO: ${{ inputs.repo }}
+        REVIEWER_AGENT_CONCURRENCY: ${{ inputs.agent-concurrency }}
+        REVIEWER_GIT_NAME: ${{ inputs.git-name }}
+        REVIEWER_GIT_EMAIL: ${{ inputs.git-email }}
+        REVIEWER_DISPATCH_WORKFLOW: ${{ inputs.dispatch-workflow }}
+        REVIEWER_DISPATCH_REF: ${{ inputs.dispatch-ref }}
+        REPO: ${{ inputs.repo }}
+        PR: ${{ inputs.pr }}
+      # Every child process inherits this environment, which is how the fixer's `git push` reaches
+      # the credential helper with the App credentials it needs.
+      run: |
+        set -euo pipefail
+        if [ -z "$PR" ]; then
+          PR="$(node bin/code-reviewer.mjs next "$REPO")"
+        fi
+        if [ -z "$PR" ]; then
+          echo 'nothing to review'
+          echo 'outcome=skipped' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "reviewing $REPO#$PR"
+        node bin/code-reviewer.mjs run "$REPO" "$PR" --once | tee review.log
+        OUTCOME="$(grep -oE '^outcome: [a-z_]+' review.log | tail -1 | cut -d' ' -f2 || true)"
+        echo "outcome=${OUTCOME:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "### Code Reviewer: $REPO#$PR — ${OUTCOME:-unknown}" >> "$GITHUB_STEP_SUMMARY"

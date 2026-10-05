@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
-import { getPr } from './github.js';
+import { appAuthConfigured, configureAppAuth, installationToken } from './gh-auth.js';
+import { dispatchWorkflow, getPr } from './github.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
@@ -12,6 +13,7 @@ Usage:
       --once                                    return instead of waiting for answers or the
                                                 review slot (for CI; prints the outcome)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
+  code-reviewer git-credential get              git credential helper (minted App token)
   code-reviewer repo add <owner/repo> [opts]    register a repo
       --setup <cmd>                             setup command (e.g. "npm ci")
       --tests <name=cmd>                        test suite (repeatable)
@@ -29,14 +31,24 @@ async function main() {
       const flags = rest.filter((a) => a.startsWith('--'));
       const [slug, pr] = rest.filter((a) => !a.startsWith('--'));
       if (!slug || !/^\d+$/.test(pr ?? '') || flags.some((f) => f !== '--once')) return usageExit();
+      configureAppAuth(slug);
       const outcome = await runReview(slug, Number(pr), { oneShot: flags.includes('--once') });
       console.log(`outcome: ${outcome}`);
+      // The slot just freed, so wake whatever was queued behind this review rather than making
+      // it wait for the scheduled sweep. A review that threw is covered by the sweep instead.
+      const dispatch = process.env.REVIEWER_DISPATCH_WORKFLOW;
+      if (outcome === 'passed' && dispatch) await handOffToQueue(slug, dispatch);
       break;
     }
     case 'next': {
       const [slug] = rest;
       if (!slug) return usageExit();
+      configureAppAuth(slug);
       await showNextQueued(slug);
+      break;
+    }
+    case 'git-credential': {
+      await gitCredential(rest[0] ?? '');
       break;
     }
     case 'repo': {
@@ -109,6 +121,39 @@ async function repoUpsert(mode: 'add' | 'set', slug: string, argv: string[]): Pr
 }
 
 /**
+ * git's credential helper protocol: git writes `key=value` lines on stdin and reads
+ * `username=` / `password=` back on stdout. Only `get` for github.com is answered, and
+ * `store`/`erase` are deliberately no-ops — nothing is persisted, which is the whole point:
+ * each request mints or reuses a token that is still valid now.
+ *
+ * This is how the *fixer agent's* own `git push` authenticates. It runs that command itself,
+ * at the end of a round that may have started before the current token existed, so there is
+ * no command line we could have put a token on.
+ */
+async function gitCredential(operation: string): Promise<void> {
+  // Anything but `get` has no answer, and an interactive invocation has no input to read.
+  if (operation !== 'get' || process.stdin.isTTY) return;
+  if (!appAuthConfigured()) return;
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const fields = new Map(
+    Buffer.concat(chunks)
+      .toString('utf8')
+      .split('\n')
+      .filter((line) => line.includes('='))
+      .map((line) => {
+        const at = line.indexOf('=');
+        return [line.slice(0, at).trim(), line.slice(at + 1).trim()] as const;
+      }),
+  );
+  // Staying silent for any other host lets git fall through to its normal helpers.
+  if (fields.get('host') !== 'github.com') return;
+
+  process.stdout.write(`username=x-access-token\npassword=${await installationToken()}\n`);
+}
+
+/**
  * Prints the PR number of the review that should run next, and nothing else — the Actions
  * workflow dispatches whatever lands on stdout, so every diagnostic goes to stderr.
  *
@@ -117,6 +162,20 @@ async function repoUpsert(mode: 'add' | 'set', slug: string, argv: string[]): Pr
  * than costing a whole workflow run to discover it in intake.
  */
 async function showNextQueued(slug: string): Promise<void> {
+  const pr = await nextQueuedPr(slug);
+  if (pr !== null) console.log(String(pr));
+}
+
+/** Dispatch the review workflow again so the queued PR starts now. */
+async function handOffToQueue(slug: string, workflowFile: string): Promise<void> {
+  const pr = await nextQueuedPr(slug);
+  if (pr === null) return;
+  const ref = process.env.REVIEWER_DISPATCH_REF ?? 'main';
+  await dispatchWorkflow(slug, workflowFile, ref);
+  console.log(`dispatched ${workflowFile} on ${ref} for queued PR #${pr}`);
+}
+
+async function nextQueuedPr(slug: string): Promise<number | null> {
   const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, slug));
   if (!repo) throw new Error(`repo ${slug} not registered`);
 
@@ -132,7 +191,7 @@ async function showNextQueued(slug: string): Promise<void> {
   if (active.length > 0) {
     // Dispatching now would only queue again, and the holder dispatches on its way out.
     console.error(`PR #${active[0].pr} still holds the slot (${active[0].state}) — nothing to dispatch`);
-    return;
+    return null;
   }
 
   const queued = await db
@@ -149,10 +208,7 @@ async function showNextQueued(slug: string): Promise<void> {
       console.error(`could not check PR #${review.prNumber} (${String(err).split('\n')[0]}) — skipping`);
       continue;
     }
-    if (prState === 'open') {
-      console.log(String(review.prNumber));
-      return;
-    }
+    if (prState === 'open') return review.prNumber;
     await db
       .update(schema.reviews)
       .set({ state: 'failed', error: `queued but PR is ${prState}`, updatedAt: new Date() })
@@ -160,6 +216,7 @@ async function showNextQueued(slug: string): Promise<void> {
     console.error(`retired queued review for PR #${review.prNumber} (PR is ${prState})`);
   }
   console.error(`no queued review for ${slug}`);
+  return null;
 }
 
 async function showStatus(slug?: string): Promise<void> {
