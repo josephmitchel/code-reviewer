@@ -36,6 +36,14 @@ inputs:
   git-email:
     description: Commit author email for the fixer's commits.
     default: code-reviewer[bot]@users.noreply.github.com
+  repo-env:
+    description: >-
+      Extra environment variables the reviewed repo's own setup and test commands need, as
+      newline-separated KEY=VALUE lines (for example TEST_DATABASE_URL=...). The reviewer's own
+      credentials are deliberately withheld from those commands, so this is how a repo says what
+      its suites do need. Passed as an input rather than read from the job environment because a
+      composite action's steps do not reliably inherit workflow- or job-level `env`.
+    default: ''
   dispatch-workflow:
     description: >-
       Workflow filename to dispatch when a review finishes and the slot frees, so a queued PR
@@ -111,10 +119,17 @@ runs:
         REVIEWER_DISPATCH_REF: ${{ inputs.dispatch-ref }}
         REPO: ${{ inputs.repo }}
         PR: ${{ inputs.pr }}
+        REPO_ENV: ${{ inputs.repo-env }}
       # Every child process inherits this environment, which is how the fixer's `git push` reaches
       # the credential helper with the App credentials it needs.
       run: |
         set -euo pipefail
+        # Exported before the reviewer starts so they reach the reviewed repo's setup and test
+        # commands, which inherit this environment minus the reviewer's own credentials.
+        while IFS= read -r line; do
+          case "$line" in ''|'#'*) continue ;; esac
+          export "$line"
+        done <<< "$REPO_ENV"
         if [ -z "$PR" ]; then
           PR="$(node bin/code-reviewer.mjs next "$REPO")"
         fi

@@ -44,6 +44,19 @@ jobs:
     runs-on: ubuntu-latest
     # Under GitHub's 6h hard kill, so a wedged run fails with a log instead of vanishing.
     timeout-minutes: 330
+    # A repo whose suites need a real database declares it here, because the reviewer withholds
+    # its OWN DATABASE_URL from the reviewed repo's commands on purpose — otherwise those tests
+    # would point at the reviewer's database. Pair this with a `repo-env:` line on the step below.
+    #
+    # services:
+    #   postgres:
+    #     image: postgres:16
+    #     env:
+    #       POSTGRES_PASSWORD: postgres
+    #     ports: ['5432:5432']
+    #     options: >-
+    #       --health-cmd pg_isready --health-interval 10s
+    #       --health-timeout 5s --health-retries 5
     steps:
       - name: Pick the pull request
         id: pr
@@ -66,3 +79,5 @@ jobs:
           app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
           app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
           dispatch-workflow: code-review.yml
+          # repo-env: |
+          #   TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/myapp_test
