@@ -133,3 +133,37 @@ describe('runRepoCommand timeouts', () => {
     expect((await runRepoCommand('/tmp', 'true', 10_000)).passed).toBe(true);
   });
 });
+
+/**
+ * Node reports a buffer overflow with its own code and leaves `killed` and `signal` undefined — so
+ * without checking it first, a command drowned in output falls through to the generic branch and is
+ * reported as a failing test, with a truncated log standing in as the explanation.
+ */
+describe('runRepoCommand output overflow', () => {
+  it('reports a command killed for flooding its buffer as inconclusive, not failed', async () => {
+    const res = await runRepoCommand('/tmp', 'yes hello', 10_000, 1024);
+    expect(res.passed).toBe(false);
+    expect(res.timedOut).toBe(true); // carried on the same flag: both mean "this says nothing"
+    expect(res.trimmedOutput).toContain('more output than the reviewer will buffer');
+  });
+});
+
+/**
+ * The reviewed repo's install and test commands are arbitrary code, and HOME is where the git
+ * credential helper is named (~/.gitconfig), alongside ~/.claude and ~/.npmrc. An install script that
+ * rewrote the helper would have the fixer's later push hand its token wherever the repo chose.
+ */
+describe('repoCommandEnv home isolation', () => {
+  it('redirects HOME when a workspace root is configured', () => {
+    const env = repoCommandEnv({
+      HOME: '/Users/someone',
+      REVIEWER_WORKSPACE_ROOT: '/tmp/claude-reviewer-home-test',
+    });
+    expect(env.HOME).toBe('/tmp/claude-reviewer-home-test/repo-home');
+    expect(env.HOME).not.toBe('/Users/someone');
+  });
+
+  it('leaves HOME alone with no workspace root, so a laptop behaves as before', () => {
+    expect(repoCommandEnv({ HOME: '/Users/someone' }).HOME).toBe('/Users/someone');
+  });
+});

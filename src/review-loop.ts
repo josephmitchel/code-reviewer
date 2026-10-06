@@ -102,7 +102,15 @@ export async function runReview(
       // Inside the try: rebuilding the workspace is where a resume most often dies — a force-push
       // or squash can leave the round's head SHA unreachable — and outside it that threw without
       // ever recording `failed`, leaving the review holding the repo's slot in a live-looking state.
-      if (!ctx.workspaceDir && ctx.review.state !== 'pending' && ctx.review.state !== 'intake') {
+      // `awaiting_answers` is excluded deliberately: the only thing it does is read comments and run a
+      // tool-less mapper, so a clone plus the repo's install command bought nothing — and made the
+      // cheapest, most frequent run in the system the most expensive, as well as impossible after a
+      // force-push. The next iteration builds the workspace when fixing actually needs one.
+      const needsWorkspace =
+        ctx.review.state !== 'pending' &&
+        ctx.review.state !== 'intake' &&
+        ctx.review.state !== 'awaiting_answers';
+      if (!ctx.workspaceDir && needsWorkspace) {
         await runIntakeWorkspaceOnly(ctx);
       }
       switch (ctx.review.state) {

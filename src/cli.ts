@@ -200,6 +200,15 @@ async function nextQueuedPr(slug: string): Promise<number | null> {
   // the queue forever. resolveSlot retires those, exactly as claiming the slot does.
   const slot = await resolveSlot(repo.id, slug, null);
   if (!slot.ok) {
+    // A review waiting for answers is the one holder worth re-entering. Its event can be lost — the
+    // concurrency group keeps a single pending run, so a third event cancels the second, and the
+    // comment carrying the answers is exactly the kind of event that gets dropped. Nothing else would
+    // ever retry it, and the repo stayed frozen until the owner thought to comment again. Re-entering
+    // costs one comment read now that this state needs no workspace.
+    if (slot.conflict.state === 'awaiting_answers') {
+      console.error(`PR #${slot.conflict.pr} is waiting for answers — re-entering it to check`);
+      return slot.conflict.pr;
+    }
     console.error(
       `PR #${slot.conflict.pr} still holds the slot (${slot.conflict.state}) — nothing to dispatch`,
     );

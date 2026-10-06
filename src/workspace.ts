@@ -10,6 +10,12 @@ const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
+ * The reviewer's own checkout. A tool-less agent still needs a working directory that exists, and
+ * pointing it at the reviewed repo would make answer collection depend on a clone it never reads.
+ */
+export const reviewerRoot = projectRoot;
+
+/**
  * Where reviewed repositories are checked out. Default (a laptop) keeps them under the project, but
  * on a runner the project IS the action's install tree — the reviewed repo would sit beneath the
  * reviewer's own node_modules and git config, where one of its scripts could rewrite the live
@@ -178,9 +184,34 @@ const REVIEWER_ONLY_ENV = [
  */
 const REPO_ENV_CARRIER = 'REVIEWER_REPO_ENV';
 
+/**
+ * A home directory of its own for the reviewed repo's commands.
+ *
+ * Moving the checkout out of the reviewer's install tree did not protect the thing that mattered
+ * most: the git credential helper is named in the global git config, and HOME was shared — so an
+ * install script in the repo under review could rewrite ~/.gitconfig and have the fixer's later push
+ * hand its token to a helper of the repo's choosing. The same HOME also holds ~/.claude and ~/.npmrc.
+ * Nothing a setup or test command legitimately does needs any of it.
+ *
+ * The fixer keeps the real HOME, because its own `git push` is what the helper exists for.
+ */
+function repoCommandHome(source: NodeJS.ProcessEnv): string | null {
+  const root = source.REVIEWER_WORKSPACE_ROOT?.trim();
+  if (!root) return null; // local runs keep today's behaviour rather than surprising a laptop
+  const home = path.join(root, 'repo-home');
+  try {
+    fs.mkdirSync(home, { recursive: true });
+    return home;
+  } catch {
+    return null;
+  }
+}
+
 /** The environment a reviewed repo's own command gets: ours, minus anything that is ours. */
 export function repoCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source, CI: 'true' };
+  const home = repoCommandHome(source);
+  if (home) env.HOME = home;
   for (const key of REVIEWER_ONLY_ENV) delete env[key];
   for (const key of Object.keys(env)) if (key.startsWith('REVIEWER_')) delete env[key];
 
@@ -204,27 +235,48 @@ export async function runRepoCommand(
   dir: string,
   command: string,
   timeoutMs = COMMAND_TIMEOUT_MS,
+  maxBuffer = 32 * 1024 * 1024,
 ): Promise<CommandResult> {
   try {
     await execFileAsync('sh', ['-c', command], {
       cwd: dir,
       timeout: timeoutMs,
-      maxBuffer: 32 * 1024 * 1024,
+      maxBuffer,
       env: repoCommandEnv(),
     });
     return { passed: true, trimmedOutput: null };
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean; signal?: string };
+    const e = err as {
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+      killed?: boolean;
+      signal?: string;
+      code?: string;
+    };
     const combined = [e.stdout ?? '', e.stderr ?? ''].join('\n');
     // execFile reports a timeout by killing the child, so this is the only way to tell a suite that
     // failed from one that never got to finish. Reporting them the same way invents a failure, and
     // whatever output was salvaged is a partial log that looks like the explanation for it.
-    const timedOut = e.killed === true || e.signal === 'SIGTERM';
-    const body = timedOut
-      ? `(killed after ${Math.round(timeoutMs / 60_000)} minutes — the output below is partial)\n` +
-        trimOutput(combined || '(no output before the command was killed)')
-      : trimOutput(combined || (e.message ?? 'unknown error'));
-    return { passed: false, trimmedOutput: body, timedOut };
+    // A command killed for flooding its output buffer is no more a failing test than one killed for
+    // running too long: execFile reports it with its own code, and treating it as FAIL fed auditors a
+    // truncated log as the explanation for a failure that never happened.
+    const overflowed = e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+    const timedOut = !overflowed && (e.killed === true || e.signal === 'SIGTERM');
+    let body: string;
+    if (timedOut) {
+      body =
+        `(killed after ${Math.round(timeoutMs / 60_000)} minutes — the output below is partial)\n` +
+        trimOutput(combined || '(no output before the command was killed)');
+    } else if (overflowed) {
+      body =
+        '(killed after writing more output than the reviewer will buffer — the output below is the ' +
+        'start of it, and says nothing about whether the suite would have passed)\n' +
+        trimOutput(combined || '(no output captured)');
+    } else {
+      body = trimOutput(combined || (e.message ?? 'unknown error'));
+    }
+    return { passed: false, trimmedOutput: body, timedOut: timedOut || overflowed };
   }
 }
 

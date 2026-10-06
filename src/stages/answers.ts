@@ -5,7 +5,8 @@ import { loadPrompt, runAgent } from '../agents/run-agent.js';
 import { answersOutputSchema } from '../agents/schemas.js';
 import { parseAnswers } from '../parse-answers.js';
 import { pendingUserFacingQuestions, type QuestionRow } from './questions.js';
-import { requireRound, requireWorkspace, type Ctx } from './context.js';
+import { reviewerRoot } from '../workspace.js';
+import { requireRound, type Ctx } from './context.js';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -98,7 +99,11 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
         const res = await runAgent({
           roundId: requireRound(ctx).id,
           role: `answer-mapper:${comment.id}`,
-          cwd: requireWorkspace(ctx),
+          // The reviewer's own directory, not the reviewed repo: this agent has no tools and never
+          // reads a file, so requiring a clone made answer collection depend on a checkout that can
+          // fail — and after a force-push it failed outright, so the review could not collect the
+          // very answers that would have unblocked it.
+          cwd: reviewerRoot,
           outputSchema: answersOutputSchema,
           model: 'haiku',
           // No tools: this prompt carries a PR comment written by someone else, and the job is
