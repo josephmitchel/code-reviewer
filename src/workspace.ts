@@ -107,6 +107,26 @@ async function ensureCommitIdentity(dir: string): Promise<void> {
   }
 }
 
+/**
+ * Push the workspace's HEAD to a branch, surfacing git's own words on failure.
+ *
+ * The fixer pushes for itself, inside its agent run, so when that push is rejected the reason stays
+ * in the agent's transcript and all the reviewer ever saw was that the branch had not moved. Worth
+ * owning for two reasons: a rejection we can read is a rejection we can report (an App token is
+ * refused outright for a .github/workflows change without the Workflows permission, which looks
+ * identical to every other failure from outside), and a transient rejection we can simply retry.
+ */
+export async function pushHeadTo(dir: string, branch: string): Promise<{ pushed: boolean; error: string | null }> {
+  try {
+    await git(dir, ['push', 'origin', `HEAD:${branch}`]);
+    return { pushed: true, error: null };
+  } catch (err) {
+    const e = err as { stderr?: string; stdout?: string; message?: string };
+    const detail = (e.stderr || e.stdout || e.message || 'unknown error').trim();
+    return { pushed: false, error: detail.split('\n').slice(0, 6).join('\n') };
+  }
+}
+
 /** The commit the workspace is sitting on — what the fixer produced, before anyone else pushed. */
 export async function localHeadSha(dir: string): Promise<string> {
   return git(dir, ['rev-parse', 'HEAD']);

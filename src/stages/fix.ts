@@ -3,7 +3,13 @@ import { z } from 'zod';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, runAgent } from '../agents/run-agent.js';
 import { fixPlanOutputSchema } from '../agents/schemas.js';
-import { commitAuthorEmail, configuredAuthorEmail, localHeadSha, remoteBranchSha } from '../workspace.js';
+import {
+  commitAuthorEmail,
+  configuredAuthorEmail,
+  localHeadSha,
+  pushHeadTo,
+  remoteBranchSha,
+} from '../workspace.js';
 import { renderPolicies } from './audit.js';
 import { reviewConcerns } from './report.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
@@ -149,9 +155,24 @@ export async function runFixing(ctx: Ctx): Promise<void> {
       '\n\nWhen done, return the commit message you used via the structured output.',
   });
 
-  const pushed = await remoteBranchSha(workspace, ctx.review.prBranch);
+  let pushed = await remoteBranchSha(workspace, ctx.review.prBranch);
   if (pushed === round.headSha) {
-    throw new Error('fixer finished but the remote branch did not advance — fix was not pushed');
+    // The fixer's own push did not land. If it committed, the work is right here, so push it
+    // ourselves: a transient rejection then simply succeeds, and a refusal we cannot recover from is
+    // one we can finally read and report instead of guessing from a branch that failed to move.
+    const localHead = await localHeadSha(workspace);
+    if (localHead === round.headSha) {
+      throw new Error('fixer finished without committing anything — nothing to push');
+    }
+    console.log(`fixer's push did not land; pushing ${localHead.slice(0, 10)} from the reviewer`);
+    const attempt = await pushHeadTo(workspace, ctx.review.prBranch);
+    if (!attempt.pushed) {
+      throw new Error(
+        `the fixer committed ${localHead.slice(0, 10)} but it cannot be pushed:\n${attempt.error}\n` +
+          '(a change under .github/workflows/ needs the GitHub App to hold the Workflows permission)',
+      );
+    }
+    pushed = await remoteBranchSha(workspace, ctx.review.prBranch);
   }
   // "The branch moved" is not the same as "we moved it". If the owner pushed while the fixer was
   // working, the fixer's own push is rejected as non-fast-forward (its prompt forbids force-pushing,

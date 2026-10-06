@@ -43,6 +43,11 @@ Adding a project takes three steps, none of which touch this repo:
 3. Set four secrets on it: `DATABASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`,
    `REVIEWER_APP_CLIENT_ID`, `REVIEWER_APP_PRIVATE_KEY` — and install the GitHub App on it.
 
+The App needs these repository permissions: Contents, Issues, Pull requests, Commit statuses and
+Actions (all read and write), Metadata (read), and **Workflows (read and write)** — without the last
+one, GitHub rejects any fix that touches a file under `.github/workflows/`, and the push fails with
+nothing else in the system able to explain why.
+
 Everything that accumulates is scoped per repo: the review slot (one active review per project,
 so projects never queue behind each other), concerns, and the policies built from your answers.
 One database serves every project.
