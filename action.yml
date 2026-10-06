@@ -31,11 +31,17 @@ inputs:
       runner with the reviewed repo's test suite, so this is well below the local default of 10.
     default: '5'
   git-name:
-    description: Commit author name for the fixer's commits.
-    default: code-reviewer[bot]
+    description: >-
+      Commit author name for the fixer's commits. Defaults to the bot account of the GitHub App
+      this reviewer runs as, so a fix in a repository's permanent history carries the same identity
+      as the review that asked for it. Override it if you run a different App.
+    default: jm-code-reviewer[bot]
   git-email:
-    description: Commit author email for the fixer's commits.
-    default: code-reviewer[bot]@users.noreply.github.com
+    description: >-
+      Commit author email for the fixer's commits. The numeric prefix is the bot account's user id:
+      GitHub's <id>+<login>@users.noreply.github.com form is what makes it attribute the commit to
+      that account, avatar and link included, rather than showing an author it cannot resolve.
+    default: 338258166+jm-code-reviewer[bot]@users.noreply.github.com
   repo-env:
     description: >-
       Extra environment variables the reviewed repo's own setup and test commands need, as
