@@ -139,14 +139,23 @@ export async function installationToken(): Promise<string> {
   // Resolving the installation from the repo avoids carrying an installation id as a secret:
   // it is derivable, and one less thing to re-paste when the app is reinstalled.
   const installation = await githubApi<{ id: number }>(`/repos/${authRepo()}/installation`, jwt);
-  const minted = await githubApi<{ token: string; expires_at: string }>(
-    `/app/installations/${installation.id}/access_tokens`,
-    jwt,
-    'POST',
-  );
+  const minted = await githubApi<{
+    token: string;
+    expires_at: string;
+    permissions?: Record<string, string>;
+  }>(`/app/installations/${installation.id}/access_tokens`, jwt, 'POST');
   cached = { token: minted.token, expiresAt: Date.parse(minted.expires_at) };
-  // stderr, not stdout: when git invokes the credential helper, stdout is the protocol.
+  // The granted permissions, not just the expiry. An App permission that has been declared but not
+  // yet approved on the installation looks exactly like one that was never added, and the only place
+  // it surfaced was a push rejection six minutes into a fix round. One glance at the log now answers
+  // "does this token hold what it needs" — `workflows: write` in particular, without which any fix
+  // touching .github/workflows/ is refused outright.
+  const granted = Object.entries(minted.permissions ?? {})
+    .map(([name, level]) => `${name}=${level}`)
+    .sort()
+    .join(' ');
   console.error(`minted installation token, expires ${minted.expires_at}`);
+  console.error(`token permissions: ${granted || '(none reported)'}`);
   return cached.token;
 }
 
