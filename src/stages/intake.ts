@@ -142,7 +142,10 @@ export async function resolveSlot(
         updatedAt: new Date(),
       })
       .where(eq(schema.reviews.id, stale.reviewId));
-    console.log(`released stale review for PR #${stale.pr} (was ${stale.state}, ${stale.why})`);
+    // stderr, not stdout: resolveSlot is reached from `code-reviewer next`, whose entire stdout is
+    // consumed as a PR number by the workflow. Logging here put this sentence into $PR, breaking the
+    // sweep in the one situation it exists to handle.
+    console.error(`released stale review for PR #${stale.pr} (was ${stale.state}, ${stale.why})`);
   }
   return block ? { ok: false, ...block } : { ok: true };
 }
@@ -178,7 +181,13 @@ export async function runIntake(ctx: Ctx): Promise<void> {
     const prev = round;
     const prevNo = prev?.roundNo ?? 0;
     if (prevNo + 1 > MAX_ROUNDS) {
-      throw new Error(`intake would create round ${prevNo + 1} past the cap of ${MAX_ROUNDS} — state machine bug`);
+      // Reached legitimately when the branch moves after the last round — not a bug, so say what it
+      // is. The review has spent its rounds; a new head needs a review of its own.
+      throw new Error(
+        `this review has used all ${MAX_ROUNDS} rounds and the branch has moved to ` +
+          `${pr.headSha.slice(0, 10)} since the last one — reviewing the new head would need a fresh ` +
+          'review (code-reviewer reset, then re-run)',
+      );
     }
     // A round following a fix cycle verifies the fix diff instead of re-auditing the whole PR.
     // The PR summary is carried forward so reports keep describing the full PR (the scout

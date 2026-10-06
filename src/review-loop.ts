@@ -201,7 +201,31 @@ async function inferRetryState(ctx: Ctx): Promise<State> {
   if (!ctx.round.synthesizedAt) return 'auditing';
   if (!ctx.round.reportCommentId) return 'synthesizing';
   if (!ctx.round.plan) return stateAfterReport(ctx);
+
+  // Every loud failure in the fix round tells the owner to comment on the PR to start a fresh round,
+  // and that instruction only works if a comment can reach intake. Resuming at 'fixing' against a
+  // head the plan was never written for throws the identical error instead — and did so on every
+  // later comment, every reopen, forever, with `code-reviewer reset` the only way out. A head that
+  // has moved means this round is finished with, whatever state it died in.
+  const live = await livePrHead(ctx);
+  if (live && live !== ctx.round.headSha) {
+    console.log(
+      `branch head is ${live.slice(0, 10)}, not this round's ${ctx.round.headSha.slice(0, 10)} — ` +
+        'starting a fresh round against the new head',
+    );
+    return 'intake';
+  }
   return 'fixing';
+}
+
+/** The PR's head right now, or null when GitHub cannot be asked — never a guess. */
+async function livePrHead(ctx: Ctx): Promise<string | null> {
+  try {
+    return (await getPr(ctx.repo.slug, ctx.review.prNumber)).headSha;
+  } catch (err) {
+    console.warn(`could not read the PR's head (${String(err).split('\n')[0]}) — resuming the recorded round`);
+    return null;
+  }
 }
 
 export { workspacePath };

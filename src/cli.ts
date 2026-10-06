@@ -231,19 +231,53 @@ async function nextQueuedPr(slug: string): Promise<number | null> {
   // before it ever executes — the concurrency group keeps exactly one pending run, so a third
   // event cancels the second — and that PR then has no review row at all, with no further event
   // coming. The sweep is the only thing that notices, so it reconciles against GitHub.
-  const known = new Set(
+  const existingByPr = new Map(
     (
       await db
-        .select({ pr: schema.reviews.prNumber })
+        .select({
+          pr: schema.reviews.prNumber,
+          state: schema.reviews.state,
+          currentRoundId: schema.reviews.currentRoundId,
+        })
         .from(schema.reviews)
         .where(eq(schema.reviews.repoId, repo.id))
-    ).map((r) => r.pr),
+    ).map((r) => [r.pr, r]),
   );
   try {
-    for (const pr of await listOpenPrNumbers(slug)) {
-      if (!known.has(pr)) {
-        console.error(`PR #${pr} is open with no review of its own — enrolling it`);
-        return pr;
+    for (const prNumber of await listOpenPrNumbers(slug)) {
+      const existing = existingByPr.get(prNumber);
+      // Only two kinds of PR are the sweep's business: one with no review at all, and one whose
+      // review failed and whose code has since changed. Everything else is live, queued or finished.
+      if (existing && existing.state !== 'failed') continue;
+
+      let info;
+      try {
+        info = await getPr(slug, prNumber);
+      } catch (err) {
+        console.error(`could not check PR #${prNumber} (${String(err).split('\n')[0]}) — skipping`);
+        continue;
+      }
+      // Both the workflow's trigger and intake refuse these, so enrolling one only buys a failed run.
+      if (info.isDraft || info.isFork) continue;
+
+      if (!existing) {
+        console.error(`PR #${prNumber} is open with no review of its own — enrolling it`);
+        return prNumber;
+      }
+      // A failed review is worth retrying only when there is something new to review; the same head
+      // would reproduce the same failure every six hours, forever.
+      const [round] = existing.currentRoundId
+        ? await db
+            .select({ headSha: schema.rounds.headSha })
+            .from(schema.rounds)
+            .where(eq(schema.rounds.id, existing.currentRoundId))
+        : [];
+      if (round && round.headSha !== info.headSha) {
+        console.error(
+          `PR #${prNumber}'s review failed at ${round.headSha.slice(0, 10)} and the head is now ` +
+            `${info.headSha.slice(0, 10)} — retrying it`,
+        );
+        return prNumber;
       }
     }
   } catch (err) {

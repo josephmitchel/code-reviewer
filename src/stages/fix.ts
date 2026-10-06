@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, runAgent } from '../agents/run-agent.js';
 import { fixPlanOutputSchema } from '../agents/schemas.js';
-import { commitAuthorEmail, remoteBranchSha } from '../workspace.js';
+import { commitAuthorEmail, configuredAuthorEmail, localHeadSha, remoteBranchSha } from '../workspace.js';
 import { renderPolicies } from './audit.js';
 import { reviewConcerns } from './report.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
@@ -81,12 +81,25 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     console.log(`remote is at this round's fix ${remoteSha.slice(0, 10)} — already pushed, skipping fixer`);
     return;
   }
+  if (round.fixSha && remoteSha === round.headSha) {
+    // We provably pushed (fixSha is set) and the branch is back at the pre-fix head, so our commit
+    // was removed. Re-running the fixer here would silently re-apply work somebody deliberately
+    // force-pushed away — the one case these guards used to fall straight through.
+    throw new Error(
+      `our fix ${round.fixSha.slice(0, 10)} is no longer on the branch, which is back at ` +
+        `${remoteSha.slice(0, 10)} — it was force-pushed away; not re-applying it. Comment on the PR ` +
+        'to review the branch as it now stands',
+    );
+  }
   if (remoteSha !== round.headSha && !round.fixSha) {
     // fixSha is written immediately after the push, but a run killed in that gap would leave our
     // own fix looking exactly like somebody else's — and the loud failure below would then repeat
-    // on every retry, because nothing later can supply the missing fixSha. Authorship settles it.
+    // on every retry, because nothing later can supply the missing fixSha. Authorship settles it,
+    // read from the workspace's own git config rather than from the environment: the identity can
+    // come from a global config too, and comparing against the variable left this disabled wherever
+    // it was not set — and wrong across any change to the default.
     const author = await commitAuthorEmail(workspace, `origin/${ctx.review.prBranch}`);
-    const ours = process.env.REVIEWER_GIT_EMAIL;
+    const ours = (await configuredAuthorEmail(workspace)) ?? process.env.REVIEWER_GIT_EMAIL;
     if (ours && author === ours) {
       console.log(`remote head ${remoteSha.slice(0, 10)} is authored by ${author} — our push, recording it`);
       await db.update(schema.rounds).set({ fixSha: remoteSha }).where(eq(schema.rounds.id, round.id));
@@ -120,6 +133,11 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     // returned, and a session that "succeeded" with a failed push would otherwise be replayed
     // forever while the branch never moves.
     reuseSucceeded: false,
+    // And no in-call retry. Every other agent is idempotent — it reads and reports — but a second
+    // fixer attempt starts in a tree the first one already edited and committed, against a prompt
+    // that still describes the original head, and is told to implement the whole plan again. A fresh
+    // run with a clean clone is the only safe retry.
+    maxRetries: 0,
     prompt:
       loadPrompt('fixer.md', {
         PR_BRANCH: ctx.review.prBranch,
@@ -135,7 +153,21 @@ export async function runFixing(ctx: Ctx): Promise<void> {
   if (pushed === round.headSha) {
     throw new Error('fixer finished but the remote branch did not advance — fix was not pushed');
   }
-  // Recorded from the remote we just re-read, not from what the agent said it did.
+  // "The branch moved" is not the same as "we moved it". If the owner pushed while the fixer was
+  // working, the fixer's own push is rejected as non-fast-forward (its prompt forbids force-pushing,
+  // so it cannot recover) and it still returns a commit message — leaving the remote at THEIR commit,
+  // past our head, which the check above happily accepts. Recording that as fixSha then disarmed the
+  // judging guard and let the judges grade the owner's diff as our fix: the exact mis-attribution
+  // this column exists to prevent. The fixer's commit is still in the workspace, so compare.
+  const localHead = await localHeadSha(workspace);
+  if (pushed !== localHead) {
+    throw new Error(
+      `the branch is at ${pushed.slice(0, 10)}, which is not the commit the fixer produced ` +
+        `(${localHead.slice(0, 10)}) — our push did not land, most likely rejected because the branch ` +
+        'moved during the fix round; the plan is stale, so comment on the PR to start a fresh round',
+    );
+  }
+  // Recorded from the remote we just re-read, and only once it matches what we built.
   await db.update(schema.rounds).set({ fixSha: pushed }).where(eq(schema.rounds.id, round.id));
   ctx.round = { ...round, fixSha: pushed };
   console.log(`fix pushed: ${pushed.slice(0, 10)}`);

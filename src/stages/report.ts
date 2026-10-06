@@ -37,10 +37,16 @@ export async function reviewConcerns(ctx: Ctx): Promise<ConcernRow[]> {
 export function testsLine(ctx: Ctx): string {
   const results = ctx.round?.testResults ?? [];
   if (results.length === 0) return 'no suites configured';
-  const failed = results.filter((r) => !r.passed);
-  return failed.length === 0
-    ? `${results.length}/${results.length} suites pass`
-    : `${failed.length} of ${results.length} suites FAIL (${failed.map((f) => f.name).join(', ')})`;
+  // Separated for the same reason the auditors' view separates them: a suite that was killed for
+  // running too long says nothing about the code, and calling it FAIL in the PR report and the final
+  // gate comment states something untrue to the person reading it.
+  const failed = results.filter((r) => !r.passed && !r.timedOut);
+  const timedOut = results.filter((r) => r.timedOut);
+  const parts: string[] = [];
+  if (failed.length > 0) parts.push(`${failed.length} FAIL (${failed.map((f) => f.name).join(', ')})`);
+  if (timedOut.length > 0) parts.push(`${timedOut.length} timed out (${timedOut.map((t) => t.name).join(', ')})`);
+  if (parts.length === 0) return `${results.length}/${results.length} suites pass`;
+  return `${results.length - failed.length - timedOut.length}/${results.length} suites pass — ${parts.join(', ')}`;
 }
 
 /** Everything the renderer needs about the review's current concern/question state. */

@@ -101,6 +101,25 @@ async function ensureCommitIdentity(dir: string): Promise<void> {
   }
 }
 
+/** The commit the workspace is sitting on — what the fixer produced, before anyone else pushed. */
+export async function localHeadSha(dir: string): Promise<string> {
+  return git(dir, ['rev-parse', 'HEAD']);
+}
+
+/**
+ * The identity this workspace commits under, read where the commit actually gets it. The environment
+ * variable is only one of the ways it can be set — ensureCommitIdentity accepts a global git config
+ * too — so comparing against the variable left the check silently disabled in exactly the setups that
+ * do not use it.
+ */
+export async function configuredAuthorEmail(dir: string): Promise<string | null> {
+  try {
+    return await git(dir, ['config', '--get', 'user.email']);
+  } catch {
+    return null;
+  }
+}
+
 /** Author email of a ref's head — the evidence for whether a commit is one of ours. */
 export async function commitAuthorEmail(dir: string, ref: string): Promise<string> {
   return git(dir, ['log', '-1', '--format=%ae', ref]);
