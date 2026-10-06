@@ -98,11 +98,13 @@ export async function runReview(
   }
 
   while (ctx.review.state !== 'passed') {
-    // Any state after intake needs the workspace on disk.
-    if (!ctx.workspaceDir && ctx.review.state !== 'pending' && ctx.review.state !== 'intake') {
-      await runIntakeWorkspaceOnly(ctx);
-    }
     try {
+      // Inside the try: rebuilding the workspace is where a resume most often dies — a force-push
+      // or squash can leave the round's head SHA unreachable — and outside it that threw without
+      // ever recording `failed`, leaving the review holding the repo's slot in a live-looking state.
+      if (!ctx.workspaceDir && ctx.review.state !== 'pending' && ctx.review.state !== 'intake') {
+        await runIntakeWorkspaceOnly(ctx);
+      }
       switch (ctx.review.state) {
         case 'pending':
           await setState(ctx, 'intake');

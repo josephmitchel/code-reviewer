@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { appJwt, isFresh, resetTokenCacheForTests } from './gh-auth.js';
+import { appJwt, isFresh, isTransient, resetTokenCacheForTests } from './gh-auth.js';
 
 /**
  * Two things here fail nowhere but in production. The refresh margin decides whether a two-hour
@@ -78,5 +78,25 @@ describe('appJwt', () => {
     process.env.REVIEWER_APP_CLIENT_ID = 'Iv23liABCDEF';
     process.env.REVIEWER_APP_PRIVATE_KEY = privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
     expect(parse(appJwt()).verified).toBe(true);
+  });
+});
+
+/**
+ * Which failures are worth another attempt. The stake is specific: the fixer's `git push` happens at
+ * the end of a round that may have run two hours, and a single 502 there used to lose all of it. The
+ * opposite mistake matters too — retrying a 401 or 404 four times just delays a verdict that will not
+ * change, while the agent sits waiting on a credential helper.
+ */
+describe('isTransient', () => {
+  it('retries when there was no response at all', () => {
+    expect(isTransient(null)).toBe(true);
+  });
+
+  it.each([500, 502, 503, 504, 429, 403])('retries %i', (status) => {
+    expect(isTransient(status)).toBe(true);
+  });
+
+  it.each([400, 401, 404, 422])('does not retry %i — the answer will not change', (status) => {
+    expect(isTransient(status)).toBe(false);
   });
 });

@@ -235,8 +235,9 @@ export async function runIntake(ctx: Ctx): Promise<void> {
         passed: res.passed,
         ranAt: new Date().toISOString(),
         trimmedOutput: res.trimmedOutput,
+        timedOut: res.timedOut,
       });
-      console.log(`  ${tc.name}: ${res.passed ? 'pass' : 'FAIL'}`);
+      console.log(`  ${tc.name}: ${res.passed ? 'pass' : res.timedOut ? 'TIMED OUT' : 'FAIL'}`);
     }
     await db.update(schema.rounds).set({ testResults: results }).where(eq(schema.rounds.id, round.id));
     ctx.round = { ...round, testResults: results };

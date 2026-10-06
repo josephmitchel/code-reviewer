@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { positiveIntEnv } from './stages/context.js';
+
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +42,7 @@ export async function prepareWorkspace(
     await execFileAsync('git', ['clone', cloneUrl, dir]);
   }
   await git(dir, ['fetch', 'origin', '--prune']);
+  await ensureCommitPresent(dir, headSha);
   await git(dir, ['checkout', '-B', branch, headSha]);
   await git(dir, ['reset', '--hard', headSha]);
   await git(dir, ['clean', '-fd']);
@@ -53,6 +56,36 @@ export async function prepareWorkspace(
  * fix has already been written, as a git error nobody reads. Set the identity from the
  * environment when it is provided, and refuse the workspace now if there is still none.
  */
+/**
+ * A resumed round checks out the SHA it was created for, which an ordinary fetch only provides while
+ * that commit is still reachable from a ref. Squash, rebase or force-push the branch between the
+ * report and the answer and it is not — `git checkout` then fails with `unable to read tree`, which
+ * says nothing about what happened. Ask for the commit directly first, and if the remote no longer
+ * has it, say so in terms that name the cause.
+ */
+async function ensureCommitPresent(dir: string, sha: string): Promise<void> {
+  const present = async () => {
+    try {
+      await git(dir, ['cat-file', '-e', `${sha}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (await present()) return;
+  try {
+    await git(dir, ['fetch', 'origin', sha]);
+  } catch {
+    // Servers may refuse to serve an arbitrary SHA; the check below reports it either way.
+  }
+  if (await present()) return;
+  throw new Error(
+    `commit ${sha.slice(0, 10)} is no longer on the remote — the branch was force-pushed, squashed ` +
+      'or rebased since this round began, so the round cannot be resumed against it; comment on the ' +
+      'PR to start a fresh round on the new head',
+  );
+}
+
 async function ensureCommitIdentity(dir: string): Promise<void> {
   const name = process.env.REVIEWER_GIT_NAME;
   const email = process.env.REVIEWER_GIT_EMAIL;
@@ -66,6 +99,11 @@ async function ensureCommitIdentity(dir: string): Promise<void> {
         '(or a global git user.email) so the fixer can commit',
     );
   }
+}
+
+/** Author email of a ref's head — the evidence for whether a commit is one of ours. */
+export async function commitAuthorEmail(dir: string, ref: string): Promise<string> {
+  return git(dir, ['log', '-1', '--format=%ae', ref]);
 }
 
 export async function remoteBranchSha(dir: string, branch: string): Promise<string> {
@@ -82,7 +120,16 @@ export async function changedFilePaths(dir: string, baseSha: string, headSha: st
 export interface CommandResult {
   passed: boolean;
   trimmedOutput: string | null;
+  /** The command was killed for exceeding its budget — not the same thing as a failing test. */
+  timedOut?: boolean;
 }
+
+/**
+ * How long one repo command may run. Ten minutes was chosen against laptop timings; a 2-core runner
+ * with a cold `npm ci` can push a suite that takes four minutes locally well past it, and a killed
+ * suite used to be recorded as a plain FAIL and fed to ten auditors as evidence of broken code.
+ */
+const COMMAND_TIMEOUT_MS = positiveIntEnv('REVIEWER_COMMAND_TIMEOUT_MS', 10 * 60 * 1000);
 
 /**
  * Variables that belong to the reviewer and must never reach the reviewed repo's own commands.
@@ -137,7 +184,7 @@ export function repoCommandEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.
 export async function runRepoCommand(
   dir: string,
   command: string,
-  timeoutMs = 10 * 60 * 1000,
+  timeoutMs = COMMAND_TIMEOUT_MS,
 ): Promise<CommandResult> {
   try {
     await execFileAsync('sh', ['-c', command], {
@@ -148,9 +195,17 @@ export async function runRepoCommand(
     });
     return { passed: true, trimmedOutput: null };
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
+    const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean; signal?: string };
     const combined = [e.stdout ?? '', e.stderr ?? ''].join('\n');
-    return { passed: false, trimmedOutput: trimOutput(combined || (e.message ?? 'unknown error')) };
+    // execFile reports a timeout by killing the child, so this is the only way to tell a suite that
+    // failed from one that never got to finish. Reporting them the same way invents a failure, and
+    // whatever output was salvaged is a partial log that looks like the explanation for it.
+    const timedOut = e.killed === true || e.signal === 'SIGTERM';
+    const body = timedOut
+      ? `(killed after ${Math.round(timeoutMs / 60_000)} minutes — the output below is partial)\n` +
+        trimOutput(combined || '(no output before the command was killed)')
+      : trimOutput(combined || (e.message ?? 'unknown error'));
+    return { passed: false, trimmedOutput: body, timedOut };
   }
 }
 

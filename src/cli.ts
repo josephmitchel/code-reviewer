@@ -6,6 +6,7 @@ import { configureAppAuth } from './gh-auth.js';
 import { gitCredential } from './git-credential.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
 import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
+import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
@@ -14,6 +15,7 @@ Usage:
   code-reviewer run <owner/repo> <pr#> [--once] run (or resume) the review loop for a PR
       --once                                    return instead of waiting for answers or the
                                                 review slot (for CI; prints the outcome)
+  code-reviewer migrate                        apply pending migrations (advisory-locked)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
   code-reviewer git-credential get              git credential helper (minted App token)
@@ -43,6 +45,9 @@ async function main() {
       if (outcome === 'passed' && dispatch) await handOffToQueue(slug, dispatch);
       break;
     }
+    case 'migrate':
+      await runMigrations();
+      break;
     case 'next': {
       const [slug] = rest;
       if (!slug) return usageExit();

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, runAgent } from '../agents/run-agent.js';
 import { fixPlanOutputSchema } from '../agents/schemas.js';
-import { remoteBranchSha } from '../workspace.js';
+import { commitAuthorEmail, remoteBranchSha } from '../workspace.js';
 import { renderPolicies } from './audit.js';
 import { reviewConcerns } from './report.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
@@ -81,6 +81,19 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     console.log(`remote is at this round's fix ${remoteSha.slice(0, 10)} — already pushed, skipping fixer`);
     return;
   }
+  if (remoteSha !== round.headSha && !round.fixSha) {
+    // fixSha is written immediately after the push, but a run killed in that gap would leave our
+    // own fix looking exactly like somebody else's — and the loud failure below would then repeat
+    // on every retry, because nothing later can supply the missing fixSha. Authorship settles it.
+    const author = await commitAuthorEmail(workspace, `origin/${ctx.review.prBranch}`);
+    const ours = process.env.REVIEWER_GIT_EMAIL;
+    if (ours && author === ours) {
+      console.log(`remote head ${remoteSha.slice(0, 10)} is authored by ${author} — our push, recording it`);
+      await db.update(schema.rounds).set({ fixSha: remoteSha }).where(eq(schema.rounds.id, round.id));
+      ctx.round = { ...round, fixSha: remoteSha };
+      return;
+    }
+  }
   if (remoteSha !== round.headSha) {
     // Loudly, and without rebasing: the plan names files and approaches derived from a diff that
     // no longer describes the branch. A fresh round has to re-read the new head.
@@ -103,6 +116,10 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     outputSchema: z.object({ commit_message: z.string() }),
     model: 'opus',
     tools: 'write',
+    // Never reuse a succeeded fixer session: its product is the pushed commit, not the text it
+    // returned, and a session that "succeeded" with a failed push would otherwise be replayed
+    // forever while the branch never moves.
+    reuseSucceeded: false,
     prompt:
       loadPrompt('fixer.md', {
         PR_BRANCH: ctx.review.prBranch,

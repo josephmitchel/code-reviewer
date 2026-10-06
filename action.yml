@@ -89,8 +89,10 @@ runs:
       working-directory: ${{ github.action_path }}
       env:
         DATABASE_URL: ${{ inputs.database-url }}
-      # The dump carried the migration journal over, so on an up-to-date database this is a no-op.
-      run: npx drizzle-kit migrate
+      # Advisory-locked, unlike `drizzle-kit migrate`: one database serves every project while the
+      # workflow's concurrency group is per repo, so two repos opening a PR in the same minute would
+      # otherwise both apply the same pending migration and the loser would fail its whole review.
+      run: node bin/code-reviewer.mjs migrate
 
     - name: Configure git for the fixer
       shell: bash

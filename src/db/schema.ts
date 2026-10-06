@@ -42,6 +42,8 @@ export interface TestResult {
   passed: boolean;
   ranAt: string;
   trimmedOutput: string | null;
+  /** Killed for exceeding its time budget. Reported to auditors as that, never as a failing test. */
+  timedOut?: boolean;
 }
 
 export interface BlastRadiusFile {

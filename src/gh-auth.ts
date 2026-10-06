@@ -84,20 +84,51 @@ export function appJwt(): string {
   return `${input}.${signature}`;
 }
 
+/**
+ * Attempts and backoff for minting a token. Not generosity: the single most expensive moment in the
+ * system is the fixer's `git push`, which happens at the end of a round that may have run for two
+ * hours. One 502 from api.github.com there used to lose all of it — the helper returned nothing, the
+ * push failed, and the round died. Four tries over roughly half a minute costs nothing by comparison.
+ */
+const TOKEN_ATTEMPTS = 4;
+const TOKEN_BACKOFF_MS = [1_000, 4_000, 10_000];
+
+/** Worth trying again: GitHub is unavailable or rate-limiting, or the network blinked. */
+export function isTransient(status: number | null): boolean {
+  if (status === null) return true; // fetch itself threw — no response at all
+  return status === 429 || status === 403 || status >= 500;
+}
+
 async function githubApi<T>(path: string, jwt: string, method: 'GET' | 'POST' = 'GET'): Promise<T> {
-  const res = await fetch(`https://api.github.com${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${jwt}`,
-      accept: 'application/vnd.github+json',
-      'x-github-api-version': '2022-11-28',
-      'user-agent': 'code-reviewer',
-    },
-  });
-  if (!res.ok) {
-    throw new Error(`GitHub ${method} ${path} failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+  let last = '';
+  for (let attempt = 0; attempt < TOKEN_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      const wait = TOKEN_BACKOFF_MS[attempt - 1] ?? 10_000;
+      console.error(`code-reviewer: retrying ${method} ${path} in ${wait / 1000}s (${last})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    let status: number | null = null;
+    try {
+      const res = await fetch(`https://api.github.com${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${jwt}`,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          'user-agent': 'code-reviewer',
+        },
+      });
+      status = res.status;
+      if (res.ok) return (await res.json()) as T;
+      last = `${res.status} ${(await res.text()).slice(0, 160)}`;
+    } catch (err) {
+      last = String(err).split('\n')[0];
+    }
+    // A 401 or 404 is an answer, not a blip: the credentials or the installation are wrong, and
+    // waiting cannot change that.
+    if (!isTransient(status)) break;
   }
-  return (await res.json()) as T;
+  throw new Error(`code-reviewer: GitHub ${method} ${path} failed after ${TOKEN_ATTEMPTS} attempts: ${last}`);
 }
 
 /** A usable installation token, minted or reused. */

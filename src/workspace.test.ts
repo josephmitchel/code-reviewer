@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { repoCommandEnv } from './workspace.js';
+import { repoCommandEnv, runRepoCommand } from './workspace.js';
 
 /**
  * The reviewed repo's setup and test commands are arbitrary code — `npm ci` alone runs that
@@ -106,5 +106,30 @@ describe('repoCommandEnv with a repo-env carrier', () => {
 
   it('is a no-op when no carrier is set', () => {
     expect(repoCommandEnv({ PATH: '/usr/bin' }).PATH).toBe('/usr/bin');
+  });
+});
+
+/**
+ * A command killed for running too long used to be recorded as `passed: false` with a partial log,
+ * indistinguishable from a suite that genuinely failed — and ten auditors were then handed that log
+ * as evidence of broken code. The detection relies on what execFile actually reports when it kills a
+ * child, so this exercises a real process rather than trusting an assumption about `err.killed`.
+ */
+describe('runRepoCommand timeouts', () => {
+  it('marks a command killed for exceeding its budget, and says so in the output', async () => {
+    const res = await runRepoCommand('/tmp', 'sleep 5', 400);
+    expect(res.passed).toBe(false);
+    expect(res.timedOut).toBe(true);
+    expect(res.trimmedOutput).toContain('killed after');
+  });
+
+  it('does not mark an ordinary failure as a timeout', async () => {
+    const res = await runRepoCommand('/tmp', 'echo boom >&2; exit 1', 10_000);
+    expect(res.passed).toBe(false);
+    expect(res.timedOut).toBe(false);
+  });
+
+  it('passes a command that succeeds', async () => {
+    expect((await runRepoCommand('/tmp', 'true', 10_000)).passed).toBe(true);
   });
 });

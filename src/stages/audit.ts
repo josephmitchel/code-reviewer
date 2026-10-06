@@ -11,11 +11,13 @@ import { AGENT_CONCURRENCY, AUDITOR_CHARACTERISTICS, requireRound, requireWorksp
 export function renderTestResults(results: TestResult[] | null): string {
   if (!results || results.length === 0) return 'No test suites are configured for this repo.';
   return results
-    .map((r) =>
-      r.passed
-        ? `- ${r.name} (\`${r.command}\`): PASS`
-        : `- ${r.name} (\`${r.command}\`): FAIL\n\`\`\`\n${r.trimmedOutput ?? ''}\n\`\`\``,
-    )
+    .map((r) => {
+      if (r.passed) return `- ${r.name} (\`${r.command}\`): PASS`;
+      // A killed command is not evidence of broken code, and saying FAIL here invited ten auditors
+      // to explain a failure that never happened from a log that was merely cut off.
+      const verdict = r.timedOut ? 'TIMED OUT — did not finish, so it says nothing either way' : 'FAIL';
+      return `- ${r.name} (\`${r.command}\`): ${verdict}\n\`\`\`\n${r.trimmedOutput ?? ''}\n\`\`\``;
+    })
     .join('\n');
 }
 
