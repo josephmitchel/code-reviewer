@@ -2,13 +2,38 @@ import { and, eq, notInArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { getPr } from '../github.js';
 import { prepareWorkspace, runRepoCommand } from '../workspace.js';
-import { MAX_ROUNDS, type Ctx } from './context.js';
+import { MAX_ROUNDS, requireWorkspace, type Ctx } from './context.js';
 
 export interface ReviewSlotConflict {
   reviewId: number;
   pr: number;
   state: string;
+  /** Last state change. The only evidence available that a run is still alive. */
+  updatedAt: Date;
 }
+
+/**
+ * States that exist only while a run is actively working. A review sits in `awaiting_answers` for
+ * as long as the owner takes to reply — days is normal and correct — so it is deliberately absent:
+ * treating it as stale would steal the slot from the one review that is behaving exactly as designed.
+ */
+export const ACTIVE_WORK_STATES = new Set([
+  'intake',
+  'auditing',
+  'synthesizing',
+  'reporting',
+  'fix_planning',
+  'fixing',
+  'judging',
+  'gating',
+]);
+
+/**
+ * How long a holder may sit in an active-work state before it is presumed dead. Above GitHub's 6h
+ * hard kill, so a genuinely long run is never robbed of its slot; a run killed by that cap, or
+ * cancelled, never gets to record anything, so this is the only thing that frees the repo.
+ */
+const STALE_HOLDER_MS = 7 * 60 * 60 * 1000;
 
 /** Either this review holds the repo's review slot, or the review that does is named. */
 export type SlotClaim =
@@ -27,16 +52,27 @@ export type SlotClaim =
 export function classifyConflicts(
   conflicts: ReviewSlotConflict[],
   prStateOf: (pr: number) => string | null,
+  now: number = Date.now(),
 ): {
-  retire: Array<ReviewSlotConflict & { prState: string }>;
+  retire: Array<ReviewSlotConflict & { why: string }>;
   block: { conflict: ReviewSlotConflict; reason: 'open' | 'unknown' } | null;
 } {
-  const retire: Array<ReviewSlotConflict & { prState: string }> = [];
+  const retire: Array<ReviewSlotConflict & { why: string }> = [];
   for (const conflict of conflicts) {
+    // Checked before asking GitHub anything: a holder stuck mid-work is dead whatever its PR says,
+    // and this is the only path that frees a slot after a run was killed without recording a thing.
+    const idleMs = now - conflict.updatedAt.getTime();
+    if (ACTIVE_WORK_STATES.has(conflict.state) && idleMs > STALE_HOLDER_MS) {
+      retire.push({
+        ...conflict,
+        why: `no progress in ${Math.round(idleMs / 3_600_000)}h while in ${conflict.state} — run presumed killed`,
+      });
+      continue;
+    }
     const prState = prStateOf(conflict.pr);
     if (prState === null) return { retire, block: { conflict, reason: 'unknown' } };
     if (prState === 'open') return { retire, block: { conflict, reason: 'open' } };
-    retire.push({ ...conflict, prState });
+    retire.push({ ...conflict, why: `PR is ${prState}` });
   }
   return { retire, block: null };
 }
@@ -65,7 +101,12 @@ export async function resolveSlot(
   excludeReviewId: number | null,
 ): Promise<SlotClaim> {
   const rows = await db
-    .select({ id: schema.reviews.id, pr: schema.reviews.prNumber, state: schema.reviews.state })
+    .select({
+      id: schema.reviews.id,
+      pr: schema.reviews.prNumber,
+      state: schema.reviews.state,
+      updatedAt: schema.reviews.updatedAt,
+    })
     .from(schema.reviews)
     .where(
       and(
@@ -75,7 +116,7 @@ export async function resolveSlot(
     );
   const conflicts: ReviewSlotConflict[] = rows
     .filter((r) => r.id !== excludeReviewId)
-    .map((r) => ({ reviewId: r.id, pr: r.pr, state: r.state }));
+    .map((r) => ({ reviewId: r.id, pr: r.pr, state: r.state, updatedAt: r.updatedAt }));
   if (conflicts.length === 0) return { ok: true };
 
   const prStates = new Map<number, string | null>();
@@ -90,17 +131,36 @@ export async function resolveSlot(
 
   const { retire, block } = classifyConflicts(conflicts, (pr) => prStates.get(pr) ?? null);
   for (const stale of retire) {
+    // `failed`, never `pending`: `failed` is what makes the next run consult inferRetryState and
+    // resume where this one died. A review downgraded to `pending` restarts at intake and audits an
+    // empty diff instead, which is how a stale pass turns into a green gate.
     await db
       .update(schema.reviews)
       .set({
         state: 'failed',
-        error: `abandoned in state ${stale.state}: PR #${stale.pr} is ${stale.prState}`,
+        error: `abandoned in state ${stale.state}: ${stale.why}`,
         updatedAt: new Date(),
       })
       .where(eq(schema.reviews.id, stale.reviewId));
-    console.log(`released stale review for PR #${stale.pr} (was ${stale.state}, PR is ${stale.prState})`);
+    console.log(`released stale review for PR #${stale.pr} (was ${stale.state}, ${stale.why})`);
   }
   return block ? { ok: false, ...block } : { ok: true };
+}
+
+/**
+ * Bring the workspace to a state the repo's own commands can run in — `npm ci` and the like.
+ *
+ * Needed on a resume as well as at intake, and that is not a nicety: a laptop kept one workspace
+ * across the whole review, so dependencies installed once lasted all round. Each CI run gets an
+ * empty runner, so a resumed run that skipped this handed the fixer a tree with no node_modules and
+ * a prompt telling it to run the tests. Setup commands are expected to be idempotent, so running it
+ * again costs a minute rather than correctness.
+ */
+export async function runSetup(ctx: Ctx): Promise<void> {
+  if (!ctx.repo.setupCommand) return;
+  console.log(`running setup: ${ctx.repo.setupCommand}`);
+  const setup = await runRepoCommand(requireWorkspace(ctx), ctx.repo.setupCommand);
+  if (!setup.passed) throw new Error(`setup command failed:\n${setup.trimmedOutput}`);
 }
 
 export async function runIntake(ctx: Ctx): Promise<void> {
@@ -164,13 +224,7 @@ export async function runIntake(ctx: Ctx): Promise<void> {
   console.log(`workspace ready at ${ctx.workspaceDir}`);
 
   if (!round.testResults) {
-    if (ctx.repo.setupCommand) {
-      console.log(`running setup: ${ctx.repo.setupCommand}`);
-      const setup = await runRepoCommand(ctx.workspaceDir, ctx.repo.setupCommand);
-      if (!setup.passed) {
-        throw new Error(`setup command failed:\n${setup.trimmedOutput}`);
-      }
-    }
+    await runSetup(ctx);
     const results = [];
     for (const tc of ctx.repo.testCommands) {
       console.log(`running tests: ${tc.name} (${tc.command})`);

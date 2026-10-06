@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from './db/client.js';
 import { getPr } from './github.js';
 import { prepareWorkspace, workspacePath } from './workspace.js';
-import { claimReviewSlot, runIntake } from './stages/intake.js';
+import { claimReviewSlot, runIntake, runSetup } from './stages/intake.js';
 import { runAudit } from './stages/audit.js';
 import { runSynthesis } from './stages/synthesis.js';
 import { runReport, blockingConcerns } from './stages/report.js';
@@ -173,7 +173,13 @@ async function stateAfterReport(ctx: Ctx): Promise<State> {
   return pending.length > 0 ? 'awaiting_answers' : 'fix_planning';
 }
 
-/** For resumes that land mid-pipeline: ensure the workspace exists without creating a new round. */
+/**
+ * For resumes that land mid-pipeline: rebuild the workspace without creating a new round.
+ *
+ * Every CI run starts on a bare runner, so this is a full clone AND the repo's setup command —
+ * the fixer and the judges both run the repo's tests, and a tree with no dependencies fails them
+ * for reasons that have nothing to do with the code under review.
+ */
 async function runIntakeWorkspaceOnly(ctx: Ctx): Promise<void> {
   if (!ctx.round) throw new Error(`state ${ctx.review.state} with no current round`);
   ctx.workspaceDir = await prepareWorkspace(
@@ -182,6 +188,7 @@ async function runIntakeWorkspaceOnly(ctx: Ctx): Promise<void> {
     ctx.review.prBranch,
     ctx.round.headSha,
   );
+  await runSetup(ctx);
 }
 
 /** A failed run retries the state it failed in (recorded state was already advanced past pending). */

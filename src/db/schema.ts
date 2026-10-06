@@ -113,6 +113,11 @@ export const rounds = pgTable('rounds', {
   reportCommentId: bigint('report_comment_id', { mode: 'number' }),
   synthesizedAt: timestamp('synthesized_at', { withTimezone: true }),
   plan: jsonb('plan').$type<FixPlan>(),
+  // The head this round's fixer actually pushed, read back from the remote after it finished —
+  // never taken from what the agent claimed. It is what tells "our fix is already on the branch"
+  // (so a re-entered `fixing` can skip the fixer) apart from "someone else moved the branch under
+  // us" (so the stored plan is stale and must not be applied to a head it was never written for).
+  fixSha: text('fix_sha'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

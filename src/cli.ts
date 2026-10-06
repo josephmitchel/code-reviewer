@@ -2,9 +2,10 @@ import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
-import { appAuthConfigured, configureAppAuth, installationToken } from './gh-auth.js';
+import { configureAppAuth } from './gh-auth.js';
+import { gitCredential } from './git-credential.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
-import { resolveSlot } from './stages/intake.js';
+import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
 import { runReview } from './review-loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
@@ -14,6 +15,7 @@ Usage:
       --once                                    return instead of waiting for answers or the
                                                 review slot (for CI; prints the outcome)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
+  code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
   code-reviewer git-credential get              git credential helper (minted App token)
   code-reviewer repo add <owner/repo> [opts]    register a repo
       --setup <cmd>                             setup command (e.g. "npm ci")
@@ -48,8 +50,15 @@ async function main() {
       await showNextQueued(slug);
       break;
     }
+    case 'abandon': {
+      const [slug, pr, ...why] = rest;
+      if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
+      await abandonReview(slug, Number(pr), why.join(' ') || 'the run ended before the stage finished');
+      break;
+    }
     case 'git-credential': {
-      await gitCredential(rest[0] ?? '');
+      const answer = await gitCredential(rest[0] ?? '', process.stdin);
+      if (answer) process.stdout.write(answer);
       break;
     }
     case 'repo': {
@@ -122,36 +131,34 @@ async function repoUpsert(mode: 'add' | 'set', slug: string, argv: string[]): Pr
 }
 
 /**
- * git's credential helper protocol: git writes `key=value` lines on stdin and reads
- * `username=` / `password=` back on stdout. Only `get` for github.com is answered, and
- * `store`/`erase` are deliberately no-ops — nothing is persisted, which is the whole point:
- * each request mints or reuses a token that is still valid now.
+ * Record that a run ended without finishing its stage — a cancelled or timed-out CI job, which never
+ * gets to record anything itself. Without this a killed run's review keeps whatever stage it was in
+ * and holds the repo's only review slot until the staleness bound expires hours later.
  *
- * This is how the *fixer agent's* own `git push` authenticates. It runs that command itself,
- * at the end of a round that may have started before the current token existed, so there is
- * no command line we could have put a token on.
+ * `failed` rather than `pending`, so the next run resumes the stage through inferRetryState instead
+ * of restarting at intake and auditing an empty diff. A review in `awaiting_answers` is untouched:
+ * it was not interrupted, it is waiting for its answers.
  */
-async function gitCredential(operation: string): Promise<void> {
-  // Anything but `get` has no answer, and an interactive invocation has no input to read.
-  if (operation !== 'get' || process.stdin.isTTY) return;
-  if (!appAuthConfigured()) return;
-
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  const fields = new Map(
-    Buffer.concat(chunks)
-      .toString('utf8')
-      .split('\n')
-      .filter((line) => line.includes('='))
-      .map((line) => {
-        const at = line.indexOf('=');
-        return [line.slice(0, at).trim(), line.slice(at + 1).trim()] as const;
-      }),
-  );
-  // Staying silent for any other host lets git fall through to its normal helpers.
-  if (fields.get('host') !== 'github.com') return;
-
-  process.stdout.write(`username=x-access-token\npassword=${await installationToken()}\n`);
+async function abandonReview(slug: string, prNumber: number, reason: string): Promise<void> {
+  const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, slug));
+  if (!repo) throw new Error(`repo ${slug} not registered`);
+  const [review] = await db
+    .select()
+    .from(schema.reviews)
+    .where(and(eq(schema.reviews.repoId, repo.id), eq(schema.reviews.prNumber, prNumber)));
+  if (!review) {
+    console.log(`no review for ${slug}#${prNumber} — nothing to record`);
+    return;
+  }
+  if (!ACTIVE_WORK_STATES.has(review.state)) {
+    console.log(`review for #${prNumber} is in ${review.state} — not an interrupted stage, left alone`);
+    return;
+  }
+  await db
+    .update(schema.reviews)
+    .set({ state: 'failed', error: `run ended in ${review.state}: ${reason}`, updatedAt: new Date() })
+    .where(eq(schema.reviews.id, review.id));
+  console.log(`recorded #${prNumber} as failed (was ${review.state}) — the slot is free again`);
 }
 
 /**

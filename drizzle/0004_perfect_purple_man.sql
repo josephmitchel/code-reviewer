@@ -1,0 +1,1 @@
+ALTER TABLE "rounds" ADD COLUMN "fix_sha" text;

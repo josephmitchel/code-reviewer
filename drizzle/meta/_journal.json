@@ -29,6 +29,13 @@
       "when": 1789498236168,
       "tag": "0003_volatile_lightspeed",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791247792041,
+      "tag": "0004_perfect_purple_man",
+      "breakpoints": true
     }
   ]
 }

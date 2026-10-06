@@ -70,11 +70,26 @@ export async function runFixing(ctx: Ctx): Promise<void> {
   const workspace = requireWorkspace(ctx);
   if (!round.plan) throw new Error('fixing without a stored plan');
 
-  // If the remote branch has already moved past this round's head, the fix was pushed.
+  // Two very different things used to look identical here: our own fix already being on the
+  // branch (a run died after pushing, so re-entering must not fix twice) and somebody else having
+  // pushed while the round waited for answers. Inequality alone cannot tell them apart, and under
+  // CI the waiting window is hours, so the second case was common — and it silently skipped the
+  // fixer, leaving the judges to grade the owner's unrelated commits and the gate to pass over
+  // concerns no one had touched. `fixSha` is the recorded, verified head of our own push.
   const remoteSha = await remoteBranchSha(workspace, ctx.review.prBranch);
-  if (remoteSha !== round.headSha) {
-    console.log(`remote already at ${remoteSha.slice(0, 10)} — fix push detected, skipping fixer`);
+  if (round.fixSha && remoteSha === round.fixSha) {
+    console.log(`remote is at this round's fix ${remoteSha.slice(0, 10)} — already pushed, skipping fixer`);
     return;
+  }
+  if (remoteSha !== round.headSha) {
+    // Loudly, and without rebasing: the plan names files and approaches derived from a diff that
+    // no longer describes the branch. A fresh round has to re-read the new head.
+    throw new Error(
+      `branch moved during the fix round — plan is stale (round audited ${round.headSha.slice(0, 10)}, ` +
+        `remote is now ${remoteSha.slice(0, 10)}` +
+        `${round.fixSha ? `, our own fix was ${round.fixSha.slice(0, 10)}` : ''}) — ` +
+        'the plan was never written against this head; comment on the PR to start a fresh round',
+    );
   }
 
   const planBlock = round.plan.steps
@@ -87,7 +102,7 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     cwd: workspace,
     outputSchema: z.object({ commit_message: z.string() }),
     model: 'opus',
-    readOnly: false,
+    tools: 'write',
     prompt:
       loadPrompt('fixer.md', {
         PR_BRANCH: ctx.review.prBranch,
@@ -103,5 +118,8 @@ export async function runFixing(ctx: Ctx): Promise<void> {
   if (pushed === round.headSha) {
     throw new Error('fixer finished but the remote branch did not advance — fix was not pushed');
   }
+  // Recorded from the remote we just re-read, not from what the agent said it did.
+  await db.update(schema.rounds).set({ fixSha: pushed }).where(eq(schema.rounds.id, round.id));
+  ctx.round = { ...round, fixSha: pushed };
   console.log(`fix pushed: ${pushed.slice(0, 10)}`);
 }

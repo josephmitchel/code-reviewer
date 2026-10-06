@@ -9,6 +9,14 @@ import { requireRound, requireWorkspace, type Ctx } from './context.js';
 
 const POLL_INTERVAL_MS = 30_000;
 
+/**
+ * Who may answer. An answer is not a comment: it decides which concerns get fixed, is written into
+ * the fixer's prompt, and is saved as repo policy that every later audit reads. Anyone on the
+ * internet can comment on a public PR, so the author's relationship to the repo is the gate, and
+ * anything GitHub does not vouch for is read as ordinary conversation.
+ */
+const ANSWER_AUTHORITY = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
 /** Comment ids this reviewer posted itself — never parse our own reports as answers. */
 async function ownCommentIds(ctx: Ctx): Promise<Set<number>> {
   const rows = await db
@@ -64,6 +72,13 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
   let answered = 0;
   for (const comment of comments) {
     if (own.has(comment.id)) continue;
+    if (!ANSWER_AUTHORITY.has(comment.authorAssociation)) {
+      console.log(
+        `ignoring reply ${comment.id} from ${comment.authorLogin} (${comment.authorAssociation}) — ` +
+          'only the owner, a member or a collaborator can answer',
+      );
+      continue;
+    }
     if (open.size === 0) break;
     const expected = [...open.keys()];
     const remaining = [...open.values()];
@@ -86,7 +101,9 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
           cwd: requireWorkspace(ctx),
           outputSchema: answersOutputSchema,
           model: 'haiku',
-          readOnly: true,
+          // No tools: this prompt carries a PR comment written by someone else, and the job is
+          // pure text mapping over text already in the prompt. Nothing to read, nothing to run.
+          tools: 'none',
           maxRetries: 0,
           prompt: loadPrompt('answer-mapper.md', {
             QUESTIONS: remaining

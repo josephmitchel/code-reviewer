@@ -88,6 +88,12 @@ export interface IssueComment {
   body: string;
   createdAt: string;
   authorLogin: string;
+  /**
+   * GitHub's relationship between this author and the repo: OWNER, MEMBER, COLLABORATOR,
+   * CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, NONE, … Carried because a reply is an instruction to the
+   * reviewer — it decides what gets fixed and becomes repo policy — so who wrote it matters.
+   */
+  authorAssociation: string;
 }
 
 export async function getCommentCreatedAt(repoSlug: string, commentId: number): Promise<string> {
@@ -107,10 +113,17 @@ export async function listRepliesSince(
 ): Promise<IssueComment[]> {
   const since = new Date(sinceIso).getTime();
   const comments = await ghJson<
-    Array<{ id: number; body: string; created_at: string; user: { login: string } }>
+    Array<{ id: number; body: string; created_at: string; user: { login: string }; author_association?: string }>
   >(['api', `repos/${repoSlug}/issues/${prNumber}/comments`, '--paginate']);
   const reviews = await ghJson<
-    Array<{ id: number; body: string | null; submitted_at?: string; state: string; user: { login: string } }>
+    Array<{
+      id: number;
+      body: string | null;
+      submitted_at?: string;
+      state: string;
+      user: { login: string };
+      author_association?: string;
+    }>
   >(['api', `repos/${repoSlug}/pulls/${prNumber}/reviews`, '--paginate']);
   const all: IssueComment[] = [
     ...comments.map((c) => ({
@@ -118,6 +131,8 @@ export async function listRepliesSince(
       body: c.body,
       createdAt: c.created_at,
       authorLogin: c.user.login,
+      // Absent is treated as NONE, never as trusted.
+      authorAssociation: c.author_association ?? 'NONE',
     })),
     ...reviews
       .filter((r) => r.state !== 'PENDING' && r.body && r.submitted_at)
@@ -126,6 +141,7 @@ export async function listRepliesSince(
         body: r.body as string,
         createdAt: r.submitted_at as string,
         authorLogin: r.user.login,
+        authorAssociation: r.author_association ?? 'NONE',
       })),
   ];
   return all

@@ -100,7 +100,7 @@ runs:
         git config --global user.name "$GIT_NAME"
         git config --global user.email "$GIT_EMAIL"
         git config --global credential.helper \
-          "!node '${{ github.action_path }}/bin/code-reviewer.mjs' git-credential"
+          "!node '${{ github.action_path }}/bin/git-credential.mjs'"
 
     - name: Review
       id: review
@@ -113,6 +113,11 @@ runs:
         REVIEWER_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
         REVIEWER_APP_INSTALL_REPO: ${{ inputs.repo }}
         REVIEWER_AGENT_CONCURRENCY: ${{ inputs.agent-concurrency }}
+        # Checked out beside the runner's other scratch space, NOT under this action's own install
+        # tree: there the reviewed repo would sit beneath the reviewer's node_modules and git config,
+        # close enough for one of its scripts to rewrite the live credential helper and for its test
+        # suite to resolve modules out of ours.
+        REVIEWER_WORKSPACE_ROOT: ${{ runner.temp }}/code-reviewer-workspaces
         REVIEWER_GIT_NAME: ${{ inputs.git-name }}
         REVIEWER_GIT_EMAIL: ${{ inputs.git-email }}
         REVIEWER_DISPATCH_WORKFLOW: ${{ inputs.dispatch-workflow }}
@@ -135,8 +140,30 @@ runs:
           echo 'outcome=skipped' >> "$GITHUB_OUTPUT"
           exit 0
         fi
+        # Published before the long part starts, so the cleanup step below knows which review to
+        # record if this job is cancelled or hits its timeout partway through.
+        echo "pr=$PR" >> "$GITHUB_OUTPUT"
         echo "reviewing $REPO#$PR"
         node bin/code-reviewer.mjs run "$REPO" "$PR" --once | tee review.log
         OUTCOME="$(grep -oE '^outcome: [a-z_]+' review.log | tail -1 | cut -d' ' -f2 || true)"
         echo "outcome=${OUTCOME:-unknown}" >> "$GITHUB_OUTPUT"
         echo "### Code Reviewer: $REPO#$PR — ${OUTCOME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Record an interrupted run
+      # A cancelled or timed-out job never reaches the reviewer's own error handling, so its review
+      # keeps whatever stage it was in and holds the repo's single review slot. Best-effort: GitHub
+      # allows a short grace period on cancellation. `abandon` ignores a review that was merely
+      # waiting for answers, and a stage that failed on its own has already recorded itself.
+      if: ${{ cancelled() || failure() }}
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        DATABASE_URL: ${{ inputs.database-url }}
+        REPO: ${{ inputs.repo }}
+        PR: ${{ steps.review.outputs.pr }}
+      run: |
+        set -euo pipefail
+        if [ -n "$PR" ]; then
+          node bin/code-reviewer.mjs abandon "$REPO" "$PR" \
+            'the GitHub Actions run was cancelled or timed out'
+        fi

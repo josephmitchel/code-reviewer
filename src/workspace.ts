@@ -7,8 +7,19 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * Where reviewed repositories are checked out. Default (a laptop) keeps them under the project, but
+ * on a runner the project IS the action's install tree — the reviewed repo would sit beneath the
+ * reviewer's own node_modules and git config, where one of its scripts could rewrite the live
+ * credential helper, and where its test suite resolves modules by walking up into ours.
+ */
+function workspaceRoot(): string {
+  const configured = process.env.REVIEWER_WORKSPACE_ROOT?.trim();
+  return configured ? configured : path.join(projectRoot, 'workspaces');
+}
+
 export function workspacePath(repoSlug: string): string {
-  return path.join(projectRoot, 'workspaces', repoSlug.replace('/', '__'));
+  return path.join(workspaceRoot(), repoSlug.replace('/', '__'));
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {

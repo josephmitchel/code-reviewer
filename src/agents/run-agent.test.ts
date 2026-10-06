@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  agentEnv,
   ENVIRONMENT_TIMEOUT_MS,
   EnvironmentUnavailableError,
   STALL_TIMEOUT_MS,
@@ -226,5 +227,48 @@ describe('error messages', () => {
 
   it('keeps the count readable when there was only one retry', () => {
     expect(new EnvironmentUnavailableError('judge', 5_000, 1).message).toContain('1 connection retry');
+  });
+});
+
+/**
+ * Agents run with a Bash tool inside the reviewed repo, and the fixer is told to run that repo's
+ * test suite — so whatever is in an agent's environment is reachable by code the reviewer did not
+ * write. The reviewer's database connection string has no business being there at all, and the App
+ * private key (which can push to the repo under review) belongs only to the one agent that pushes.
+ */
+describe('agentEnv', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://user:pw@host/neondb',
+    REVIEWER_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----',
+    REVIEWER_APP_CLIENT_ID: 'Iv23li',
+    CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
+    PATH: '/usr/bin',
+  };
+
+  afterEach(() => {
+    for (const key of Object.keys(base)) delete process.env[key];
+  });
+
+  const withBase = (tools: 'none' | 'inspect' | 'write') => {
+    Object.assign(process.env, base);
+    return agentEnv(tools);
+  };
+
+  it.each(['none', 'inspect', 'write'] as const)('never hands %s agents the database', (tools) => {
+    expect(withBase(tools)).not.toHaveProperty('DATABASE_URL');
+  });
+
+  it.each(['none', 'inspect'] as const)('withholds the App private key from %s agents', (tools) => {
+    expect(withBase(tools)).not.toHaveProperty('REVIEWER_APP_PRIVATE_KEY');
+  });
+
+  it('keeps the App private key for the fixer, whose own git push needs it', () => {
+    expect(withBase('write').REVIEWER_APP_PRIVATE_KEY).toBe('-----BEGIN RSA PRIVATE KEY-----');
+  });
+
+  it('keeps the credential the agent authenticates with, and the rest of the environment', () => {
+    const env = withBase('inspect');
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat-x');
+    expect(env.PATH).toBe('/usr/bin');
   });
 });
