@@ -40,8 +40,13 @@ export async function runFixPlanning(ctx: Ctx): Promise<void> {
 
   // Every user-facing question is answered before this stage runs (runAwaitAnswers blocks
   // on them), so nothing is held back here. Non-blocking verification-round discoveries stay
-  // out of the plan — they are recorded for a future PR, never fixed in this one.
-  const open = (await reviewConcerns(ctx)).filter((c) => c.status === 'open' && c.gateBlocking);
+  // out of the plan — they are recorded for a future PR, never fixed in this one. That future PR
+  // is any later review whose audit carries them: gateBlocking is fixed at creation, so filtering
+  // on it alone kept them out of every plan in every PR, re-reported forever and never fixed.
+  // Inherited concerns are planned here but still never block this review's gate (isBlocking).
+  const open = (await reviewConcerns(ctx)).filter(
+    (c) => c.status === 'open' && (c.gateBlocking || c.originReviewId !== ctx.review.id),
+  );
   if (open.length === 0) return;
 
   const res = await runAgent({
