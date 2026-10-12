@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, schema } from '../db/client.js';
-import { loadPrompt, runAgent } from '../agents/run-agent.js';
+import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { fixPlanOutputSchema } from '../agents/schemas.js';
 import {
   commitAuthorEmail,
@@ -54,7 +54,7 @@ export async function runFixPlanning(ctx: Ctx): Promise<void> {
     role: 'fix-planner',
     cwd: requireWorkspace(ctx),
     outputSchema: fixPlanOutputSchema,
-    model: 'opus',
+    model: MODELS.author,
     prompt: loadPrompt('fix-planner.md', {
       HEAD_SHA: round.headSha,
       CONCERNS: renderConcernsBlock(open),
@@ -138,7 +138,7 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     role: 'fixer',
     cwd: workspace,
     outputSchema: z.object({ commit_message: z.string() }),
-    model: 'opus',
+    model: MODELS.author,
     tools: 'write',
     // Never reuse a succeeded fixer session: its product is the pushed commit, not the text it
     // returned, and a session that "succeeded" with a failed push would otherwise be replayed

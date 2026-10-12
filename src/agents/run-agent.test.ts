@@ -242,6 +242,7 @@ describe('agentEnv', () => {
     REVIEWER_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----',
     REVIEWER_APP_CLIENT_ID: 'Iv23li',
     CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
+    CLAUDE_CODE_EFFORT_LEVEL: 'low',
     PATH: '/usr/bin',
   };
 
@@ -256,6 +257,10 @@ describe('agentEnv', () => {
 
   it.each(['none', 'inspect', 'write'] as const)('never hands %s agents the database', (tools) => {
     expect(withBase(tools)).not.toHaveProperty('DATABASE_URL');
+  });
+
+  it.each(['none', 'inspect', 'write'] as const)('lets nothing override the effort runAgent sets for %s agents', (tools) => {
+    expect(withBase(tools)).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
   });
 
   it.each(['none', 'inspect'] as const)('withholds the App private key from %s agents', (tools) => {

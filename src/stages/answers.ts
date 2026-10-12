@@ -1,7 +1,7 @@
 import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { getCommentCreatedAt, listRepliesSince } from '../github.js';
-import { loadPrompt, runAgent } from '../agents/run-agent.js';
+import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { answersOutputSchema } from '../agents/schemas.js';
 import { parseAnswers } from '../parse-answers.js';
 import { pendingUserFacingQuestions, type QuestionRow } from './questions.js';
@@ -105,7 +105,7 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
           // very answers that would have unblocked it.
           cwd: reviewerRoot,
           outputSchema: answersOutputSchema,
-          model: 'haiku',
+          model: MODELS.mapper,
           // No tools: this prompt carries a PR comment written by someone else, and the job is
           // pure text mapping over text already in the prompt. Nothing to read, nothing to run.
           tools: 'none',

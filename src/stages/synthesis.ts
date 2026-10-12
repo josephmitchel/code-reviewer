@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
-import { loadPrompt, runAgent } from '../agents/run-agent.js';
+import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { synthesisOutputSchema, type SynthesisOutput } from '../agents/schemas.js';
 import { renderPolicies, renderTestResults } from './audit.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
@@ -55,7 +55,7 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
       role: attempt === 1 ? 'synthesis' : 'synthesis-retry',
       cwd: requireWorkspace(ctx),
       outputSchema: synthesisOutputSchema,
-      model: 'opus',
+      model: MODELS.author,
       // Synthesis emits one very large structured output and goes quiet for long stretches
       // while it does — 28m between messages in the slowest succeeded run, far past the
       // default stall budget every other role runs under.
