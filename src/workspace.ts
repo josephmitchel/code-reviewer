@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { track } from './heartbeat.js';
 import { positiveIntEnv } from './stages/context.js';
 
 const execFileAsync = promisify(execFile);
@@ -257,6 +258,7 @@ export async function runRepoCommand(
   timeoutMs = COMMAND_TIMEOUT_MS,
   maxBuffer = 32 * 1024 * 1024,
 ): Promise<CommandResult> {
+  const activity = track(`command "${command.length > 60 ? `${command.slice(0, 57)}...` : command}"`);
   try {
     await execFileAsync('sh', ['-c', command], {
       cwd: dir,
@@ -297,6 +299,8 @@ export async function runRepoCommand(
       body = trimOutput(combined || (e.message ?? 'unknown error'));
     }
     return { passed: false, trimmedOutput: body, timedOut: timedOut || overflowed };
+  } finally {
+    activity.done();
   }
 }
 

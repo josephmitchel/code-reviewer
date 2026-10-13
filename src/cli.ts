@@ -4,6 +4,8 @@ import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 import { db, pool, schema } from './db/client.js';
 import { configureAppAuth } from './gh-auth.js';
 import { gitCredential } from './git-credential.js';
+import { startHeartbeat } from './heartbeat.js';
+import { printRaw, timestampConsole } from './log.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
 import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
 import { runMigrations } from './migrate.js';
@@ -29,16 +31,27 @@ Usage:
   code-reviewer reset <owner/repo> <pr#>        delete a review's state (concerns/policies kept)
 `;
 
+// The commands CI runs unattended. The admin ones print tables and confirmations for a person at
+// a terminal, where a timestamp on every line is only noise.
+const STAMPED = new Set(['run', 'migrate', 'next', 'abandon']);
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
+  if (cmd && STAMPED.has(cmd)) timestampConsole();
   switch (cmd) {
     case 'run': {
       const flags = rest.filter((a) => a.startsWith('--'));
       const [slug, pr] = rest.filter((a) => !a.startsWith('--'));
       if (!slug || !/^\d+$/.test(pr ?? '') || flags.some((f) => f !== '--once')) return usageExit();
       configureAppAuth(slug);
-      const outcome = await runReview(slug, Number(pr), { oneShot: flags.includes('--once') });
-      console.log(`outcome: ${outcome}`);
+      const stopHeartbeat = startHeartbeat();
+      let outcome;
+      try {
+        outcome = await runReview(slug, Number(pr), { oneShot: flags.includes('--once') });
+      } finally {
+        stopHeartbeat();
+      }
+      printRaw(`outcome: ${outcome}`);
       // The slot just freed, so wake whatever was queued behind this review rather than making
       // it wait for the scheduled sweep. A review that threw is covered by the sweep instead.
       const dispatch = process.env.REVIEWER_DISPATCH_WORKFLOW;
@@ -176,7 +189,7 @@ async function abandonReview(slug: string, prNumber: number, reason: string): Pr
  */
 async function showNextQueued(slug: string): Promise<void> {
   const pr = await nextQueuedPr(slug);
-  if (pr !== null) console.log(String(pr));
+  if (pr !== null) printRaw(String(pr));
 }
 
 /** Dispatch the review workflow again so the queued PR starts now. */

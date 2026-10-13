@@ -1,6 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from './db/client.js';
 import { getPr } from './github.js';
+import { markStage } from './heartbeat.js';
 import { prepareWorkspace, workspacePath } from './workspace.js';
 import { claimReviewSlot, runIntake, runSetup } from './stages/intake.js';
 import { runAudit } from './stages/audit.js';
@@ -21,6 +22,7 @@ async function setState(ctx: Ctx, state: State, error: string | null = null): Pr
     .set({ state, error, updatedAt: new Date() })
     .where(eq(schema.reviews.id, ctx.review.id));
   ctx.review = { ...ctx.review, state, error };
+  markStage(state);
   console.log(`\n=== state: ${state} ===`);
 }
 
@@ -70,6 +72,7 @@ export async function runReview(
 ): Promise<ReviewOutcome> {
   const oneShot = options.oneShot ?? false;
   const ctx = await loadCtx(repoSlug, prNumber);
+  markStage(ctx.review.state);
 
   // Claim the repo's review slot before this review leaves `pending`: a review that has
   // already advanced past it counts among the conflicts it would be tested against, and
