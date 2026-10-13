@@ -1,8 +1,9 @@
 # Copy this into the repository you want reviewed, as .github/workflows/code-review.yml.
 #
-# Four triggers, one job:
+# Five triggers, one job:
 #   pull_request    a new (or newly ready) PR starts a review
 #   issue_comment   your reply to the reviewer's questions resumes it
+#   pull_request_review  the same reply sent through "Review changes" resumes it too
 #   workflow_dispatch  a finishing review hands the slot to the next queued PR
 #   schedule        a safety net, in case a hand-off was missed
 #
@@ -15,6 +16,8 @@ on:
     types: [opened, reopened, ready_for_review]
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
   workflow_dispatch:
     inputs:
       pr:
@@ -35,10 +38,12 @@ concurrency:
 jobs:
   review:
     # A comment counts only when it is on a pull request and not from a bot: without the second
-    # test the reviewer's own report would trigger the next run, forever.
+    # test the reviewer's own report would trigger the next run, forever. A review reply also needs
+    # a body (an empty approval answers nothing) and an OWNER, MEMBER or COLLABORATOR behind it.
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.issue.state == 'open' && github.event.comment.user.type != 'Bot') ||
+      (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'open' && github.event.review.body && github.event.review.user.type != 'Bot' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -65,7 +70,8 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ github.event_name }}" in
-            pull_request)      echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT" ;;
+            pull_request|pull_request_review)
+                               echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT" ;;
             issue_comment)     echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT" ;;
             workflow_dispatch) echo "number=${DISPATCH_PR//[^0-9]/}" >> "$GITHUB_OUTPUT" ;;
             *)                 echo 'number=' >> "$GITHUB_OUTPUT" ;;
