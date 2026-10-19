@@ -8,6 +8,7 @@ import { startHeartbeat } from './heartbeat.js';
 import { printRaw, timestampConsole } from './log.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
 import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
+import { postFailureNotice } from './stages/report.js';
 import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
 
@@ -71,6 +72,7 @@ async function main() {
     case 'abandon': {
       const [slug, pr, ...why] = rest;
       if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
+      configureAppAuth(slug);
       await abandonReview(slug, Number(pr), why.join(' ') || 'the run ended before the stage finished');
       break;
     }
@@ -172,11 +174,21 @@ async function abandonReview(slug: string, prNumber: number, reason: string): Pr
     console.log(`review for #${prNumber} is in ${review.state} — not an interrupted stage, left alone`);
     return;
   }
+  const error = `run ended in ${review.state}: ${reason}`;
   await db
     .update(schema.reviews)
-    .set({ state: 'failed', error: `run ended in ${review.state}: ${reason}`, updatedAt: new Date() })
+    .set({ state: 'failed', error, updatedAt: new Date() })
     .where(eq(schema.reviews.id, review.id));
   console.log(`recorded #${prNumber} as failed (was ${review.state}) — the slot is free again`);
+  const [round] = review.currentRoundId
+    ? await db.select().from(schema.rounds).where(eq(schema.rounds.id, review.currentRoundId))
+    : [];
+  await postFailureNotice(slug, prNumber, {
+    stage: review.state,
+    roundNo: round?.roundNo ?? null,
+    headSha: round?.headSha ?? null,
+    error,
+  });
 }
 
 /**

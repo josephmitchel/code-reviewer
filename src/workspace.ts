@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import type { CommitFacts } from './fix-commit.js';
 import { track } from './heartbeat.js';
 import { positiveIntEnv } from './stages/context.js';
 
@@ -147,9 +148,12 @@ export async function configuredAuthorEmail(dir: string): Promise<string | null>
   }
 }
 
-/** Author email of a ref's head — the evidence for whether a commit is one of ours. */
-export async function commitAuthorEmail(dir: string, ref: string): Promise<string> {
-  return git(dir, ['log', '-1', '--format=%ae', ref]);
+/** Parents, author and message of a ref's head — the evidence for whether a commit is one of ours. */
+export async function commitFacts(dir: string, ref: string): Promise<CommitFacts> {
+  const [parents = '', authorEmail = '', message = ''] = (
+    await git(dir, ['log', '-1', '--format=%P%x00%ae%x00%B', ref])
+  ).split('\0');
+  return { parents: parents.split(' ').filter(Boolean), authorEmail, message };
 }
 
 export async function remoteBranchSha(dir: string, branch: string): Promise<string> {

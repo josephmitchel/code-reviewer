@@ -158,6 +158,39 @@ export function renderReport(input: ReportInput): string {
   return lines.join('\n');
 }
 
+export interface FailureInput {
+  stage: string;
+  roundNo: number | null;
+  headSha: string | null;
+  error: string;
+  runUrl: string | null;
+}
+
+/**
+ * Only the error's first line goes on the PR. The rest can carry the reviewed repo's own command
+ * output, and a public comment is no place for that — the run log behind `runUrl` has all of it.
+ */
+export function renderFailure(input: FailureInput): string {
+  const where =
+    input.roundNo !== null && input.headSha
+      ? ` on round ${input.roundNo} (\`${input.headSha.slice(0, 10)}\`)`
+      : '';
+  const reason = input.error.split('\n', 1)[0].replaceAll('`', "'").slice(0, 300);
+  const lines = [
+    '# Code Reviewer — stopped ⛔',
+    '',
+    `The review stopped in the \`${input.stage}\` stage${where}. No gate status is set until it finishes.`,
+    '',
+    '```',
+    reason,
+    '```',
+    '',
+  ];
+  if (input.runUrl) lines.push(`Full log: ${input.runUrl}`, '');
+  lines.push('_Comment on this PR to retry. A retry resumes from this stage unless the error above says otherwise._');
+  return lines.join('\n');
+}
+
 function escapeHtml(s: string): string {
   return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }

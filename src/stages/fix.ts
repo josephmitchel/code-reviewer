@@ -3,8 +3,9 @@ import { z } from 'zod';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { fixPlanOutputSchema } from '../agents/schemas.js';
+import { isOwnFix } from '../fix-commit.js';
 import {
-  commitAuthorEmail,
+  commitFacts,
   configuredAuthorEmail,
   localHeadSha,
   pushHeadTo,
@@ -76,6 +77,19 @@ export async function runFixPlanning(ctx: Ctx): Promise<void> {
   console.log(`fix plan: ${plan.steps.length} step(s)`);
 }
 
+/** Record the head our own push left on the branch — what judging grades and every resume trusts. */
+export async function recordFix(ctx: Ctx, sha: string): Promise<void> {
+  const round = requireRound(ctx);
+  await db.update(schema.rounds).set({ fixSha: sha }).where(eq(schema.rounds.id, round.id));
+  ctx.round = { ...round, fixSha: sha };
+}
+
+/** The remote head when it is the commit this workspace built on top of `preFixSha`, else null. */
+async function landedFix(workspace: string, branch: string, preFixSha: string): Promise<string | null> {
+  const remote = await remoteBranchSha(workspace, branch);
+  return remote !== preFixSha && remote === (await localHeadSha(workspace)) ? remote : null;
+}
+
 export async function runFixing(ctx: Ctx): Promise<void> {
   const round = requireRound(ctx);
   const workspace = requireWorkspace(ctx);
@@ -105,16 +119,15 @@ export async function runFixing(ctx: Ctx): Promise<void> {
   if (remoteSha !== round.headSha && !round.fixSha) {
     // fixSha is written immediately after the push, but a run killed in that gap would leave our
     // own fix looking exactly like somebody else's — and the loud failure below would then repeat
-    // on every retry, because nothing later can supply the missing fixSha. Authorship settles it,
-    // read from the workspace's own git config rather than from the environment: the identity can
+    // on every retry, because nothing later can supply the missing fixSha. isOwnFix settles it. The
+    // identity is read from the workspace's own git config rather than from the environment: it can
     // come from a global config too, and comparing against the variable left this disabled wherever
     // it was not set — and wrong across any change to the default.
-    const author = await commitAuthorEmail(workspace, `origin/${ctx.review.prBranch}`);
-    const ours = (await configuredAuthorEmail(workspace)) ?? process.env.REVIEWER_GIT_EMAIL;
-    if (ours && author === ours) {
-      console.log(`remote head ${remoteSha.slice(0, 10)} is authored by ${author} — our push, recording it`);
-      await db.update(schema.rounds).set({ fixSha: remoteSha }).where(eq(schema.rounds.id, round.id));
-      ctx.round = { ...round, fixSha: remoteSha };
+    const head = await commitFacts(workspace, `origin/${ctx.review.prBranch}`);
+    const ours = (await configuredAuthorEmail(workspace)) ?? process.env.REVIEWER_GIT_EMAIL ?? null;
+    if (isOwnFix(head, round, ours)) {
+      console.log(`remote head ${remoteSha.slice(0, 10)} is this round's own fix — recording it`);
+      await recordFix(ctx, remoteSha);
       return;
     }
   }
@@ -133,7 +146,7 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     .map((s, i) => `${i + 1}. [${s.concernSlug}] ${s.approach}\n   Files: ${s.files.join(', ')}`)
     .join('\n');
 
-  await runAgent({
+  const fixer = runAgent({
     roundId: round.id,
     role: 'fixer',
     cwd: workspace,
@@ -159,6 +172,19 @@ export async function runFixing(ctx: Ctx): Promise<void> {
       }) +
       '\n\nWhen done, return the commit message you used via the structured output.',
   });
+  try {
+    await fixer;
+  } catch (err) {
+    // The push is the fixer's last action, so a fixer that dies after it has still done the round's
+    // work: PR #32's stalled for 15 minutes once its push had landed. Judging that fix is the next
+    // step either way, and failing here left a pushed commit that no retry could attribute.
+    const landed = await landedFix(workspace, ctx.review.prBranch, round.headSha).catch(() => null);
+    if (!landed) throw err;
+    console.log(`fixer failed after its push landed (${String(err).split('\n')[0]}) — recording it`);
+    await recordFix(ctx, landed);
+    console.log(`fix pushed: ${landed.slice(0, 10)}`);
+    return;
+  }
 
   let pushed = await remoteBranchSha(workspace, ctx.review.prBranch);
   if (pushed === round.headSha) {
@@ -194,7 +220,6 @@ export async function runFixing(ctx: Ctx): Promise<void> {
     );
   }
   // Recorded from the remote we just re-read, and only once it matches what we built.
-  await db.update(schema.rounds).set({ fixSha: pushed }).where(eq(schema.rounds.id, round.id));
-  ctx.round = { ...round, fixSha: pushed };
+  await recordFix(ctx, pushed);
   console.log(`fix pushed: ${pushed.slice(0, 10)}`);
 }

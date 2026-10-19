@@ -1,7 +1,13 @@
 import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
-import { postComment } from '../github.js';
-import { renderReport, type ReportConcern, type ReportQuestion } from '../render-report.js';
+import { actionsRunUrl, postComment } from '../github.js';
+import {
+  renderFailure,
+  renderReport,
+  type FailureInput,
+  type ReportConcern,
+  type ReportQuestion,
+} from '../render-report.js';
 import { scoreConcerns } from '../scoring.js';
 import { pendingUserFacingQuestions } from './questions.js';
 import { MAX_ROUNDS, requireRound, type Ctx, type ConcernRow, type RoundRow } from './context.js';
@@ -117,4 +123,21 @@ export async function runReport(ctx: Ctx): Promise<void> {
   });
   ctx.round = { ...round, reportCommentId: commentId };
   console.log(`report posted (comment ${commentId})`);
+}
+
+/**
+ * A stopped review has to say so on the PR: without this, a failed run looked exactly like one still
+ * working, and PR #32 sat silent for hours. Best-effort, so it can never hide the error that stopped it.
+ */
+export async function postFailureNotice(
+  repoSlug: string,
+  prNumber: number,
+  input: Omit<FailureInput, 'runUrl'>,
+): Promise<void> {
+  try {
+    await postComment(repoSlug, prNumber, renderFailure({ ...input, runUrl: actionsRunUrl() }));
+    console.log(`failure notice posted on #${prNumber}`);
+  } catch (err) {
+    console.warn(`could not post the failure notice (${String(err).split('\n')[0]})`);
+  }
 }

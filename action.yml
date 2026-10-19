@@ -161,12 +161,16 @@ runs:
       # A cancelled or timed-out job never reaches the reviewer's own error handling, so its review
       # keeps whatever stage it was in and holds the repo's single review slot. Best-effort: GitHub
       # allows a short grace period on cancellation. `abandon` ignores a review that was merely
-      # waiting for answers, and a stage that failed on its own has already recorded itself.
+      # waiting for answers, and a stage that failed on its own has already recorded itself. The
+      # App credentials are for the comment that tells the PR its review stopped.
       if: ${{ cancelled() || failure() }}
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
         DATABASE_URL: ${{ inputs.database-url }}
+        REVIEWER_APP_CLIENT_ID: ${{ inputs.app-client-id }}
+        REVIEWER_APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        REVIEWER_APP_INSTALL_REPO: ${{ inputs.repo }}
         REPO: ${{ inputs.repo }}
         PR: ${{ steps.review.outputs.pr }}
       run: |

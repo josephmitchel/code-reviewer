@@ -1,5 +1,9 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { repoCommandEnv, runRepoCommand } from './workspace.js';
+import { commitFacts, repoCommandEnv, runRepoCommand } from './workspace.js';
 
 /**
  * The reviewed repo's setup and test commands are arbitrary code — `npm ci` alone runs that
@@ -165,5 +169,22 @@ describe('repoCommandEnv home isolation', () => {
 
   it('leaves HOME alone with no workspace root, so a laptop behaves as before', () => {
     expect(repoCommandEnv({ HOME: '/Users/someone' }).HOME).toBe('/Users/someone');
+  });
+});
+
+describe('commitFacts', () => {
+  it("reads a head's parent, author and full message", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'commit-facts-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('-c', 'user.name=a', '-c', 'user.email=a@example.com', 'commit', '-q', '--allow-empty', '-m', 'first');
+    const first = git('rev-parse', 'HEAD');
+    git('-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit', '-q', '--allow-empty',
+      '-m', 'Settle link re-rating order', '-m', 'Addresses review concerns:\n- some-slug');
+    const facts = await commitFacts(dir, 'HEAD');
+    expect(facts.parents).toEqual([first]);
+    expect(facts.authorEmail).toBe('noreply@anthropic.com');
+    expect(facts.message).toBe('Settle link re-rating order\n\nAddresses review concerns:\n- some-slug');
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

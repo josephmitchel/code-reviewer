@@ -1,15 +1,16 @@
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from './db/client.js';
-import { getPr } from './github.js';
+import { isOwnFix } from './fix-commit.js';
+import { getCommit, getPr } from './github.js';
 import { markStage } from './heartbeat.js';
 import { prepareWorkspace, workspacePath } from './workspace.js';
 import { claimReviewSlot, runIntake, runSetup } from './stages/intake.js';
 import { runAudit } from './stages/audit.js';
 import { runSynthesis } from './stages/synthesis.js';
-import { runReport, blockingConcerns } from './stages/report.js';
+import { runReport, blockingConcerns, postFailureNotice } from './stages/report.js';
 import { runAwaitAnswers } from './stages/answers.js';
 import { pendingUserFacingQuestions } from './stages/questions.js';
-import { runFixPlanning, runFixing } from './stages/fix.js';
+import { recordFix, runFixPlanning, runFixing } from './stages/fix.js';
 import { runJudging } from './stages/judge.js';
 import { runGating } from './stages/gate.js';
 import { MAX_ROUNDS, requireRound, type Ctx } from './stages/context.js';
@@ -172,7 +173,14 @@ export async function runReview(
           throw new Error(`unhandled state ${ctx.review.state}`);
       }
     } catch (err) {
+      const stage = ctx.review.state;
       await setState(ctx, 'failed', String(err));
+      await postFailureNotice(ctx.repo.slug, ctx.review.prNumber, {
+        stage,
+        roundNo: ctx.round?.roundNo ?? null,
+        headSha: ctx.round?.headSha ?? null,
+        error: String(err),
+      });
       throw err;
     }
   }
@@ -217,9 +225,25 @@ async function inferRetryState(ctx: Ctx): Promise<State> {
   // and that instruction only works if a comment can reach intake. Resuming at 'fixing' against a
   // head the plan was never written for throws the identical error instead — and did so on every
   // later comment, every reopen, forever, with `code-reviewer reset` the only way out. A head that
-  // has moved means this round is finished with, whatever state it died in.
+  // has moved means this round is finished with, whatever state it died in — unless what moved it
+  // was our own fix, which still has to be judged. A fresh round there left every concern the fix
+  // addressed open, with no judge ever looking at it.
   const live = await livePrHead(ctx);
   if (live && live !== ctx.round.headSha) {
+    if (live === ctx.round.fixSha) return 'judging';
+    if (!ctx.round.fixSha) {
+      const head = await getCommit(ctx.repo.slug, live).catch((err) => {
+        console.warn(`could not read ${live.slice(0, 10)} (${String(err).split('\n')[0]}) — leaving it to the fix stage`);
+        return null;
+      });
+      // `fixing` runs the same check against the clone, and fails loudly if the head is not ours.
+      if (!head) return 'fixing';
+      if (isOwnFix(head, ctx.round, process.env.REVIEWER_GIT_EMAIL ?? null)) {
+        console.log(`branch head ${live.slice(0, 10)} is this round's own unrecorded fix — recording it to judge`);
+        await recordFix(ctx, live);
+        return 'judging';
+      }
+    }
     console.log(
       `branch head is ${live.slice(0, 10)}, not this round's ${ctx.round.headSha.slice(0, 10)} — ` +
         'starting a fresh round against the new head',

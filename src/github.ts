@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { CommitFacts } from './fix-commit.js';
 import { appAuthConfigured, installationToken } from './gh-auth.js';
 
 const execFileAsync = promisify(execFile);
@@ -52,6 +53,22 @@ export async function getPr(repoSlug: string, prNumber: number): Promise<PrInfo>
     state: pr.state,
     changedFiles: files.map((f) => f.filename),
   };
+}
+
+/** A commit's parents, author and message, read without a checkout. */
+export async function getCommit(repoSlug: string, sha: string): Promise<CommitFacts> {
+  const c = await ghJson<{
+    parents: Array<{ sha: string }>;
+    author: { email: string } | null;
+    message: string;
+  }>(['api', `repos/${repoSlug}/git/commits/${sha}`]);
+  return { parents: c.parents.map((p) => p.sha), authorEmail: c.author?.email ?? '', message: c.message };
+}
+
+/** The Actions run this process belongs to, or null outside CI. */
+export function actionsRunUrl(): string | null {
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: runId } = process.env;
+  return server && repo && runId ? `${server}/${repo}/actions/runs/${runId}` : null;
 }
 
 export async function postComment(
