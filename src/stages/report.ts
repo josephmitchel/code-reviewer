@@ -131,12 +131,19 @@ export async function runReport(ctx: Ctx): Promise<void> {
  */
 export async function postFailureNotice(
   repoSlug: string,
-  prNumber: number,
+  review: { id: number; prNumber: number },
   input: Omit<FailureInput, 'runUrl'>,
 ): Promise<void> {
   try {
-    await postComment(repoSlug, prNumber, renderFailure({ ...input, runUrl: actionsRunUrl() }));
-    console.log(`failure notice posted on #${prNumber}`);
+    const commentId = await postComment(repoSlug, review.prNumber, renderFailure({ ...input, runUrl: actionsRunUrl() }));
+    await db.insert(schema.githubArtifacts).values({
+      reviewId: review.id,
+      kind: 'failure_comment',
+      githubId: String(commentId),
+      sha: input.headSha,
+      roundNo: input.roundNo,
+    });
+    console.log(`failure notice posted on #${review.prNumber}`);
   } catch (err) {
     console.warn(`could not post the failure notice (${String(err).split('\n')[0]})`);
   }

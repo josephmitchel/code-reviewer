@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderFailure } from './render-report.js';
+import { renderFailure, renderProgress } from './render-report.js';
 
 describe('renderFailure', () => {
   const base = {
@@ -30,7 +30,37 @@ describe('renderFailure', () => {
 
   it('omits what it does not know', () => {
     const body = renderFailure({ ...base, roundNo: null, headSha: null, runUrl: null });
-    expect(body).toContain('in the `fixing` stage. No gate status');
+    expect(body).toContain('in the `fixing` stage. The gate stays blocked');
     expect(body).not.toContain('Full log');
+  });
+});
+
+describe('renderProgress', () => {
+  const steps = [
+    { at: '2026-10-20T18:25:09Z', text: 'Planning the fixes' },
+    { at: '2026-10-20T18:33:40Z', text: 'Making the fixes (12 steps)' },
+  ];
+
+  it('marks earlier steps done and the latest in progress', () => {
+    const body = renderProgress({ intro: '**Got it**', steps, finished: false });
+    expect(body).toContain('- ✅ Planning the fixes · 18:25 UTC');
+    expect(body).toContain('- ⏳ Making the fixes (12 steps) · 18:33 UTC');
+    expect(body).toContain('updates as the review moves along');
+  });
+
+  it('marks every step done once finished, and drops the footer', () => {
+    const body = renderProgress({ intro: '**Got it**', steps, finished: true });
+    expect(body).not.toContain('⏳');
+    expect(body).not.toContain('updates as the review moves along');
+  });
+
+  it('keeps a step its own icon wherever it sits', () => {
+    const body = renderProgress({
+      intro: '**Got it**',
+      steps: [steps[0], { at: '2026-10-20T19:00:00Z', text: 'Stopped', icon: '⛔' }, steps[1]],
+      finished: false,
+    });
+    expect(body).toContain('- ⛔ Stopped · 19:00 UTC');
+    expect(body).toContain('- ⏳ Making the fixes');
   });
 });

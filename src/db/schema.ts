@@ -214,7 +214,8 @@ export const githubArtifacts = pgTable('github_artifacts', {
   reviewId: integer('review_id')
     .notNull()
     .references(() => reviews.id),
-  kind: text('kind').notNull(), // report_comment | commit_status | summary_comment
+  // report_comment | summary_comment | pr_summary_comment | progress_comment | failure_comment | commit_status
+  kind: text('kind').notNull(),
   githubId: text('github_id'),
   sha: text('sha'),
   roundNo: integer('round_no'),

@@ -8,6 +8,7 @@ import { startHeartbeat } from './heartbeat.js';
 import { printRaw, timestampConsole } from './log.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
 import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
+import { markGate, progressStep } from './stages/progress.js';
 import { postFailureNotice } from './stages/report.js';
 import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
@@ -183,7 +184,9 @@ async function abandonReview(slug: string, prNumber: number, reason: string): Pr
   const [round] = review.currentRoundId
     ? await db.select().from(schema.rounds).where(eq(schema.rounds.id, review.currentRoundId))
     : [];
-  await postFailureNotice(slug, prNumber, {
+  await markGate(slug, round ?? null, 'failed');
+  await progressStep(slug, review, 'Stopped, see the comment below', { icon: '⛔' });
+  await postFailureNotice(slug, review, {
     stage: review.state,
     roundNo: round?.roundNo ?? null,
     headSha: round?.headSha ?? null,

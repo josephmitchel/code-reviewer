@@ -63,6 +63,8 @@ intake → audit (scout + 10 auditors) → synthesis ──┬─ clean → gate
 - The report ends with numbered questions; reply on the PR with `1. <answer>` lines (or `proceed` when there are none). Fixes never start without a reply.
 - Answers are saved as per-repo policy and never asked again.
 - The gate only ever follows a clean audit of the current head — fix commits are always re-audited.
+- Until then `code-reviewer/gate` sits at pending with the current stage (`Round 2: making fixes`), and turns red if the review stops.
+- Once a fix cycle starts ("Got it" after your answers), one progress comment is edited as it moves, up to the next report. A stopped review posts a comment saying where and why.
 
 ## Layout
 

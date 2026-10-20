@@ -179,7 +179,7 @@ export function renderFailure(input: FailureInput): string {
   const lines = [
     '# Code Reviewer — stopped ⛔',
     '',
-    `The review stopped in the \`${input.stage}\` stage${where}. No gate status is set until it finishes.`,
+    `The review stopped in the \`${input.stage}\` stage${where}. The gate stays blocked until it finishes.`,
     '',
     '```',
     reason,
@@ -188,6 +188,35 @@ export function renderFailure(input: FailureInput): string {
   ];
   if (input.runUrl) lines.push(`Full log: ${input.runUrl}`, '');
   lines.push('_Comment on this PR to retry. A retry resumes from this stage unless the error above says otherwise._');
+  return lines.join('\n');
+}
+
+export interface ProgressStep {
+  at: string;
+  text: string;
+  /** Overrides the done/in-progress mark, for steps like a stop that are neither. */
+  icon?: string;
+}
+
+export interface ProgressPayload {
+  intro: string;
+  steps: ProgressStep[];
+  finished: boolean;
+}
+
+function utcTime(iso: string): string {
+  return `${new Date(iso).toISOString().slice(11, 16)} UTC`;
+}
+
+/** Every step before the last is done; the last is in progress until the cycle finishes. */
+export function renderProgress(p: ProgressPayload): string {
+  const last = p.steps.length - 1;
+  const lines = [p.intro, ''];
+  p.steps.forEach((s, i) => {
+    const mark = s.icon ?? (i < last || p.finished ? '✅' : '⏳');
+    lines.push(`- ${mark} ${s.text} · ${utcTime(s.at)}`);
+  });
+  if (!p.finished) lines.push('', '_This comment updates as the review moves along._');
   return lines.join('\n');
 }
 

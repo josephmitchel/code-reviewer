@@ -6,7 +6,7 @@ import { prepareWorkspace, remoteBranchSha } from '../workspace.js';
 import { reviewConcerns } from './report.js';
 import { AGENT_CONCURRENCY, requireRound, requireWorkspace, type Ctx } from './context.js';
 
-export async function runJudging(ctx: Ctx): Promise<void> {
+export async function runJudging(ctx: Ctx): Promise<{ judged: number; resolved: number }> {
   const round = requireRound(ctx);
   const workspace = requireWorkspace(ctx);
   if (!round.plan) throw new Error('judging without a stored plan');
@@ -30,6 +30,7 @@ export async function runJudging(ctx: Ctx): Promise<void> {
     (c) => c.status === 'open' && addressedSlugs.has(c.slug),
   );
 
+  let resolved = 0;
   const jobs = candidates.map((concern) => async () => {
     const step = plan.steps.find((s) => s.concernSlug === concern.slug);
     const res = await runAgent({
@@ -47,6 +48,7 @@ export async function runJudging(ctx: Ctx): Promise<void> {
       }),
     });
     if (res.output.verdict === 'resolved') {
+      resolved++;
       await db
         .update(schema.concerns)
         .set({
@@ -61,4 +63,5 @@ export async function runJudging(ctx: Ctx): Promise<void> {
   });
 
   await withConcurrency(jobs, AGENT_CONCURRENCY);
+  return { judged: candidates.length, resolved };
 }

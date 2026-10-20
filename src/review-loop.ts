@@ -13,6 +13,7 @@ import { pendingUserFacingQuestions } from './stages/questions.js';
 import { recordFix, runFixPlanning, runFixing } from './stages/fix.js';
 import { runJudging } from './stages/judge.js';
 import { runGating } from './stages/gate.js';
+import { markGate, progressStep, startProgress } from './stages/progress.js';
 import { MAX_ROUNDS, requireRound, type Ctx } from './stages/context.js';
 
 type State = (typeof schema.reviewState.enumValues)[number];
@@ -24,6 +25,7 @@ async function setState(ctx: Ctx, state: State, error: string | null = null): Pr
     .where(eq(schema.reviews.id, ctx.review.id));
   ctx.review = { ...ctx.review, state, error };
   markStage(state);
+  await markGate(ctx.repo.slug, ctx.round, state);
   console.log(`\n=== state: ${state} ===`);
 }
 
@@ -99,6 +101,7 @@ export async function runReview(
   if (ctx.review.state === 'failed') {
     console.log(`previous run failed (${ctx.review.error ?? 'no error recorded'}) — retrying`);
     await setState(ctx, await inferRetryState(ctx));
+    await progressStep(ctx.repo.slug, ctx.review, `Retrying the \`${ctx.review.state}\` stage`);
   }
 
   while (ctx.review.state !== 'passed') {
@@ -141,32 +144,70 @@ export async function runReview(
           await setState(ctx, blocking.length === 0 || atCap ? 'gating' : 'reporting');
           break;
         }
-        case 'reporting':
+        case 'reporting': {
           await runReport(ctx);
+          await progressStep(ctx.repo.slug, ctx.review, `Round ${requireRound(ctx).roundNo} report posted below`, {
+            finished: true,
+          });
           // With nothing to ask the owner there is nothing to await — skip straight to fixes
           // rather than announcing a wait that resolves immediately.
-          await setState(ctx, await stateAfterReport(ctx));
+          const next = await stateAfterReport(ctx);
+          if (next === 'fix_planning') {
+            await startProgress(
+              ctx.repo.slug,
+              ctx.review,
+              ctx.round,
+              '**On it** — nothing to ask this round, so the fixes have started.',
+              'Planning the fixes',
+            );
+          }
+          await setState(ctx, next);
           break;
+        }
         case 'awaiting_answers': {
           const answered = await runAwaitAnswers(ctx, { poll: !oneShot });
           if (!answered) return 'awaiting_answers';
+          await startProgress(
+            ctx.repo.slug,
+            ctx.review,
+            ctx.round,
+            '**Got it** — your answers are in. Working on the fixes now.',
+            'Planning the fixes',
+          );
           await setState(ctx, 'fix_planning');
           break;
         }
-        case 'fix_planning':
+        case 'fix_planning': {
           await runFixPlanning(ctx);
+          const steps = requireRound(ctx).plan?.steps.length ?? 0;
+          await progressStep(ctx.repo.slug, ctx.review, `Making the fixes (${steps} step${steps === 1 ? '' : 's'})`);
           await setState(ctx, 'fixing');
           break;
-        case 'fixing':
+        }
+        case 'fixing': {
           await runFixing(ctx);
+          const fixSha = requireRound(ctx).fixSha;
+          await progressStep(
+            ctx.repo.slug,
+            ctx.review,
+            fixSha ? `Checking each fix in \`${fixSha.slice(0, 10)}\`` : 'Checking each fix',
+          );
           await setState(ctx, 'judging');
           break;
-        case 'judging':
-          await runJudging(ctx);
+        }
+        case 'judging': {
+          const { judged, resolved } = await runJudging(ctx);
+          await progressStep(
+            ctx.repo.slug,
+            ctx.review,
+            `Re-auditing in round ${requireRound(ctx).roundNo + 1} (the checks resolved ${resolved} of ${judged} concerns)`,
+          );
           await setState(ctx, 'intake'); // fresh audit round on the post-fix head
           break;
+        }
         case 'gating':
           await runGating(ctx);
+          await progressStep(ctx.repo.slug, ctx.review, 'Review passed, summary posted below', { finished: true });
           await setState(ctx, 'passed');
           break;
         default:
@@ -175,7 +216,8 @@ export async function runReview(
     } catch (err) {
       const stage = ctx.review.state;
       await setState(ctx, 'failed', String(err));
-      await postFailureNotice(ctx.repo.slug, ctx.review.prNumber, {
+      await progressStep(ctx.repo.slug, ctx.review, 'Stopped, see the comment below', { icon: '⛔' });
+      await postFailureNotice(ctx.repo.slug, ctx.review, {
         stage,
         roundNo: ctx.round?.roundNo ?? null,
         headSha: ctx.round?.headSha ?? null,

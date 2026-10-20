@@ -18,6 +18,14 @@ const POLL_INTERVAL_MS = 30_000;
  */
 const ANSWER_AUTHORITY = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
+const OWN_COMMENT_KINDS = new Set([
+  'report_comment',
+  'summary_comment',
+  'pr_summary_comment',
+  'progress_comment',
+  'failure_comment',
+]);
+
 /** Comment ids this reviewer posted itself — never parse our own reports as answers. */
 async function ownCommentIds(ctx: Ctx): Promise<Set<number>> {
   const rows = await db
@@ -26,7 +34,7 @@ async function ownCommentIds(ctx: Ctx): Promise<Set<number>> {
     .where(eq(schema.githubArtifacts.reviewId, ctx.review.id));
   return new Set(
     rows
-      .filter((r) => r.kind === 'report_comment' || r.kind === 'summary_comment' || r.kind === 'pr_summary_comment')
+      .filter((r) => OWN_COMMENT_KINDS.has(r.kind))
       .map((r) => Number(r.githubId))
       .filter((n) => Number.isFinite(n)),
   );
