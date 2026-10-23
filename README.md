@@ -65,6 +65,7 @@ intake → audit (scout + 10 auditors) → synthesis ──┬─ clean → gate
 - The gate only ever follows a clean audit of the current head — fix commits are always re-audited.
 - Until then `code-reviewer/gate` sits at pending with the current stage (`Round 2: making fixes`), and turns red if the review stops.
 - Once a fix cycle starts ("Got it" after your answers), one progress comment is edited as it moves, up to the next report. A stopped review posts a comment saying where and why.
+- A passed PR whose head later moves to already-reviewed code (merging a PR stacked on it leaves such a merge commit) gets its gate carried to the new head, on the push or on any comment. Only identical code qualifies, and only when the reviews cover everything since the PR's own gated commit.
 
 ## Layout
 

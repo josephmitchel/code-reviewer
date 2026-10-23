@@ -7,6 +7,7 @@ import { gitCredential } from './git-credential.js';
 import { startHeartbeat } from './heartbeat.js';
 import { printRaw, timestampConsole } from './log.js';
 import { dispatchWorkflow, getDefaultBranch, getPr, listOpenPrNumbers } from './github.js';
+import { carryGate } from './stages/carry-gate.js';
 import { ACTIVE_WORK_STATES, resolveSlot } from './stages/intake.js';
 import { markGate, progressStep } from './stages/progress.js';
 import { postFailureNotice } from './stages/report.js';
@@ -22,6 +23,7 @@ Usage:
   code-reviewer migrate                        apply pending migrations (advisory-locked)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
+  code-reviewer carry-gate <owner/repo> <pr#>   gate a passed PR's new head if it holds reviewed code
   code-reviewer git-credential get              git credential helper (minted App token)
   code-reviewer repo add <owner/repo> [opts]    register a repo
       --setup <cmd>                             setup command (e.g. "npm ci")
@@ -35,7 +37,7 @@ Usage:
 
 // The commands CI runs unattended. The admin ones print tables and confirmations for a person at
 // a terminal, where a timestamp on every line is only noise.
-const STAMPED = new Set(['run', 'migrate', 'next', 'abandon']);
+const STAMPED = new Set(['run', 'migrate', 'next', 'abandon', 'carry-gate']);
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -52,6 +54,13 @@ async function main() {
         outcome = await runReview(slug, Number(pr), { oneShot: flags.includes('--once') });
       } finally {
         stopHeartbeat();
+      }
+      // Anything that re-enters a passed review (a comment on its PR, say) is also a chance to carry
+      // its gate onto a head that has since moved to already-reviewed code. Never fatal: it passed.
+      if (outcome === 'passed') {
+        await carryGate(slug, Number(pr)).catch((err) => {
+          console.warn(`could not check for a gate to carry (${String(err).split('\n')[0]})`);
+        });
       }
       printRaw(`outcome: ${outcome}`);
       // The slot just freed, so wake whatever was queued behind this review rather than making
@@ -75,6 +84,13 @@ async function main() {
       if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
       configureAppAuth(slug);
       await abandonReview(slug, Number(pr), why.join(' ') || 'the run ended before the stage finished');
+      break;
+    }
+    case 'carry-gate': {
+      const [slug, pr] = rest;
+      if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
+      configureAppAuth(slug);
+      await carryGate(slug, Number(pr));
       break;
     }
     case 'git-credential': {

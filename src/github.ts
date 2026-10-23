@@ -65,6 +65,11 @@ export async function getCommit(repoSlug: string, sha: string): Promise<CommitFa
   return { parents: c.parents.map((p) => p.sha), authorEmail: c.author?.email ?? '', message: c.message };
 }
 
+/** A commit's tree: two commits with the same tree hold exactly the same code. */
+export async function getTreeSha(repoSlug: string, sha: string): Promise<string> {
+  return (await ghJson<{ tree: { sha: string } }>(['api', `repos/${repoSlug}/git/commits/${sha}`])).tree.sha;
+}
+
 /** The Actions run this process belongs to, or null outside CI. */
 export function actionsRunUrl(): string | null {
   const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: runId } = process.env;

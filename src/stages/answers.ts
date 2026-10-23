@@ -24,6 +24,7 @@ const OWN_COMMENT_KINDS = new Set([
   'pr_summary_comment',
   'progress_comment',
   'failure_comment',
+  'carry_comment',
 ]);
 
 /** Comment ids this reviewer posted itself — never parse our own reports as answers. */

@@ -13,6 +13,12 @@ inputs:
       PR number to review. Leave empty to take the next queued review instead, which is what
       the scheduled sweep does.
     default: ''
+  command:
+    description: >-
+      `run` (the default) reviews. `carry-gate` only moves a passed review's gate onto the PR's
+      new head when that head holds already-reviewed code, for a job triggered by a push. It never
+      starts or advances a review, and needs `pr`.
+    default: run
   database-url:
     description: Postgres connection string holding the reviewer's state.
     required: true
@@ -132,6 +138,7 @@ runs:
         REVIEWER_DISPATCH_REF: ${{ inputs.dispatch-ref }}
         REPO: ${{ inputs.repo }}
         PR: ${{ inputs.pr }}
+        COMMAND: ${{ inputs.command }}
         # Carried as one variable and applied only to the reviewed repo's child processes. It is
         # deliberately NOT exported here: shell-exporting it put repo-supplied names into the
         # reviewer's own environment, where `DATABASE_URL` would have repointed the reviewer.
@@ -140,6 +147,17 @@ runs:
       # the credential helper with the App credentials it needs.
       run: |
         set -euo pipefail
+        case "$COMMAND" in
+          run) ;;
+          carry-gate)
+            # Before the `pr` output on purpose: there is no review stage here for the cleanup
+            # step to record, whatever happens.
+            if [ -z "$PR" ]; then echo 'carry-gate needs a pr' >&2; exit 2; fi
+            node bin/code-reviewer.mjs carry-gate "$REPO" "$PR"
+            echo 'outcome=skipped' >> "$GITHUB_OUTPUT"
+            exit 0 ;;
+          *) echo "unknown command: $COMMAND" >&2; exit 2 ;;
+        esac
         if [ -z "$PR" ]; then
           PR="$(node bin/code-reviewer.mjs next "$REPO")"
         fi

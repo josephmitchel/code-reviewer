@@ -1,19 +1,21 @@
 # Copy this into the repository you want reviewed, as .github/workflows/code-review.yml.
 #
-# Five triggers, one job:
+# Five triggers, two jobs:
 #   pull_request    a new (or newly ready) PR starts a review
 #   issue_comment   your reply to the reviewer's questions resumes it
 #   pull_request_review  the same reply sent through "Review changes" resumes it too
 #   workflow_dispatch  a finishing review hands the slot to the next queued PR
 #   schedule        a safety net, in case a hand-off was missed
 #
-# Your own pushes deliberately do NOT trigger a round: the reviewer keeps auditing the SHA the
-# current round started on, and picks up the new head when that round ends.
+# A push never starts a round: the reviewer keeps auditing the SHA the current round started on,
+# and picks up the new head when that round ends. A push (`synchronize`) runs only carry-gate,
+# which re-gates a passed PR whose new head holds already-reviewed code, such as the merge commit
+# left by merging a PR stacked on it.
 name: Code Reviewer
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
   pull_request_review:
@@ -29,19 +31,20 @@ on:
 # Everything authenticates as the GitHub App, so the job's own token needs nothing at all.
 permissions: {}
 
-# One review at a time per repo — the reviewer enforces that in its database too, but there is
-# no row locking, so two events arriving together must not run concurrently.
-concurrency:
-  group: code-reviewer-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   review:
+    # One review at a time per repo — the reviewer enforces that in its database too, but there is
+    # no row locking, so two events arriving together must not run concurrently. Set on the job,
+    # not the workflow: a skipped job then never joins the group, so a bot comment or a push can no
+    # longer cancel a real run waiting in it.
+    concurrency:
+      group: code-reviewer-${{ github.repository }}
+      cancel-in-progress: false
     # A comment counts only when it is on a pull request and not from a bot: without the second
     # test the reviewer's own report would trigger the next run, forever. A review reply also needs
     # a body (an empty approval answers nothing) and an OWNER, MEMBER or COLLABORATOR behind it.
     if: >-
-      (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
+      (github.event_name == 'pull_request' && github.event.action != 'synchronize' && github.event.pull_request.draft == false) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.issue.state == 'open' && github.event.comment.user.type != 'Bot') ||
       (github.event_name == 'pull_request_review' && github.event.pull_request.state == 'open' && github.event.review.body && github.event.review.user.type != 'Bot' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
       github.event_name == 'workflow_dispatch' ||
@@ -87,3 +90,23 @@ jobs:
           dispatch-workflow: code-review.yml
           # repo-env: |
           #   TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/myapp_test
+
+  carry-gate:
+    # Light on purpose: no database service and no review slot. It only ever re-posts a gate.
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: code-reviewer-carry-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: josephmitchel/code-reviewer@main
+        with:
+          command: carry-gate
+          pr: ${{ github.event.pull_request.number }}
+          database-url: ${{ secrets.DATABASE_URL }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
