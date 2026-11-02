@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { synthesisOutputSchema, type SynthesisOutput } from '../agents/schemas.js';
-import { renderPolicies, renderTestResults } from './audit.js';
+import { renderPolicies, renderRepoStandards, renderTestResults } from './audit.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
 
 export async function runSynthesis(ctx: Ctx): Promise<void> {
@@ -40,6 +40,7 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
     ),
     OPEN_CONCERNS: openBlock,
     POLICIES: await renderPolicies(ctx.repo.id),
+    REPO_STANDARDS: renderRepoStandards(requireWorkspace(ctx)),
     TEST_RESULTS: renderTestResults(round.testResults),
   });
 

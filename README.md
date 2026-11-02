@@ -50,7 +50,9 @@ nothing else in the system able to explain why.
 
 Everything that accumulates is scoped per repo: the review slot (one active review per project,
 so projects never queue behind each other), concerns, and the policies built from your answers.
-One database serves every project.
+One database serves every project. A `CODING_STANDARDS.md` at the repo root is read from the head
+commit on every round and put in front of the auditors, the synthesis and the fix planner beside
+those policies, so written rules and answered questions bind the same way.
 
 ## The loop
 

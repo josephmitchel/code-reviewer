@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { renderTestResults } from './audit.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { renderRepoStandards, renderTestResults, REPO_STANDARDS_FILE } from './audit.js';
 import { testsLine } from './report.js';
 
 /**
@@ -86,5 +89,38 @@ describe('testsLine', () => {
     );
     expect(line).toContain('1 FAIL (unit)');
     expect(line).toContain('1 timed out (db)');
+  });
+});
+
+/**
+ * The repo's written rules, read from the checkout so they are the head commit's. A missing or
+ * empty file says so rather than reading as an empty rulebook, and loadPrompt throws on any
+ * {{UPPER}} left after substitution, so a rule quoting a template slot must not take the round down.
+ */
+describe('renderRepoStandards', () => {
+  const dirs: string[] = [];
+  const workspace = (contents?: string) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-standards-'));
+    dirs.push(dir);
+    if (contents !== undefined) fs.writeFileSync(path.join(dir, REPO_STANDARDS_FILE), contents);
+    return dir;
+  };
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('returns the file from the checkout, trimmed', () => {
+    expect(renderRepoStandards(workspace('\n# Standards\n\n- one rule\n'))).toBe('# Standards\n\n- one rule');
+  });
+
+  it('says so when the repo has none, or an empty one', () => {
+    expect(renderRepoStandards(workspace())).toBe('(none: the repo has no CODING_STANDARDS.md)');
+    expect(renderRepoStandards(workspace('  \n'))).toBe('(CODING_STANDARDS.md is empty)');
+  });
+
+  it('breaks placeholder braces so a quoted slot is never substituted', () => {
+    expect(renderRepoStandards(workspace('Never write {{POLICIES}} by hand.'))).toBe(
+      'Never write { {POLICIES}} by hand.',
+    );
   });
 });

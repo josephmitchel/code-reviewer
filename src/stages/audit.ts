@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { getPr } from '../github.js';
@@ -19,6 +21,18 @@ export function renderTestResults(results: TestResult[] | null): string {
       return `- ${r.name} (\`${r.command}\`): ${verdict}\n\`\`\`\n${r.trimmedOutput ?? ''}\n\`\`\``;
     })
     .join('\n');
+}
+
+// The repo's own judgement-call rules, read from the checkout under review so the file and the
+// code are the same commit. Policies are what the owner answered on PRs; this is what they wrote
+// down. Placeholder braces are broken so a rule quoting one never reads as a template slot.
+export const REPO_STANDARDS_FILE = 'CODING_STANDARDS.md';
+
+export function renderRepoStandards(workspace: string): string {
+  const file = path.join(workspace, REPO_STANDARDS_FILE);
+  if (!fs.existsSync(file)) return `(none: the repo has no ${REPO_STANDARDS_FILE})`;
+  const text = fs.readFileSync(file, 'utf8').trim();
+  return text === '' ? `(${REPO_STANDARDS_FILE} is empty)` : text.replaceAll('{{', '{ {');
 }
 
 export async function renderPolicies(repoId: number): Promise<string> {
@@ -76,6 +90,7 @@ export async function runAudit(ctx: Ctx): Promise<void> {
   );
 
   const policies = await renderPolicies(ctx.repo.id);
+  const standards = renderRepoStandards(workspace);
   const testResults = renderTestResults(round.testResults);
   const blastList = blastRadius.map((f) => `- ${f.path} (${f.reason})`).join('\n');
 
@@ -110,6 +125,7 @@ export async function runAudit(ctx: Ctx): Promise<void> {
         POLICIES: policies,
         TEST_RESULTS: testResults,
         DEFINITION: definition,
+        REPO_STANDARDS: standards,
       }) + `\n\n## Prior open concerns\n\n${priorsBlock}\n`;
 
     for (let i = 1; i <= redundancy; i++) {

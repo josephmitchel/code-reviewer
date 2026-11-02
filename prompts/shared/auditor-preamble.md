@@ -26,6 +26,12 @@ Finding nothing is a valid outcome. If you genuinely find no issues against this
 
 `findings` is the only field required of you. Return it even when empty.
 
+## Repo standards
+
+The repo's own coding standards, from `CODING_STANDARDS.md` at the head commit. They are the owner's written rules, as authoritative as the policies below: a change that breaks one is a concern, and a concern that contradicts one is wrong.
+
+{{REPO_STANDARDS}}
+
 ## Established policies
 
 These are decisions the repo owner has already made. Never raise a concern that contradicts them; treat them as authoritative context.

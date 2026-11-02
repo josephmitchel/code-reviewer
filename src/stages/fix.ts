@@ -11,7 +11,7 @@ import {
   pushHeadTo,
   remoteBranchSha,
 } from '../workspace.js';
-import { renderPolicies } from './audit.js';
+import { renderPolicies, renderRepoStandards } from './audit.js';
 import { reviewConcerns } from './report.js';
 import { requireRound, requireWorkspace, type Ctx } from './context.js';
 
@@ -61,6 +61,7 @@ export async function runFixPlanning(ctx: Ctx): Promise<void> {
       CONCERNS: renderConcernsBlock(open),
       ANSWERS: await renderAnswers(round.id),
       POLICIES: await renderPolicies(ctx.repo.id),
+      REPO_STANDARDS: renderRepoStandards(requireWorkspace(ctx)),
     }),
   });
 
