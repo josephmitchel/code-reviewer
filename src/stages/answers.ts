@@ -1,6 +1,6 @@
 import { eq, inArray } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
-import { getCommentCreatedAt, listRepliesSince } from '../github.js';
+import { getCommentCreatedAt, listRepliesSince, type IssueComment } from '../github.js';
 import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { answersOutputSchema } from '../agents/schemas.js';
 import { parseAnswers } from '../parse-answers.js';
@@ -16,7 +16,7 @@ const POLL_INTERVAL_MS = 30_000;
  * internet can comment on a public PR, so the author's relationship to the repo is the gate, and
  * anything GitHub does not vouch for is read as ordinary conversation.
  */
-const ANSWER_AUTHORITY = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+export const ANSWER_AUTHORITY = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 const OWN_COMMENT_KINDS = new Set([
   'report_comment',
@@ -90,55 +90,7 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
       continue;
     }
     if (open.size === 0) break;
-    const expected = [...open.keys()];
-    const remaining = [...open.values()];
-
-    let answers = parseAnswers(comment.body, expected)?.answers ?? null;
-    if (!answers && /\bgo with (your|the) recommendations?\b/i.test(comment.body)) {
-      answers = new Map(
-        remaining
-          .filter((q) => q.recommendation)
-          .map((q) => [q.ordinal, `(accepted recommendation) ${q.recommendation}`]),
-      );
-      if (answers.size === 0) answers = null;
-    }
-    if (!answers) {
-      // Free-text reply: map it to ordinals with a small model.
-      try {
-        const res = await runAgent({
-          roundId: requireRound(ctx).id,
-          role: `answer-mapper:${comment.id}`,
-          // The reviewer's own directory, not the reviewed repo: this agent has no tools and never
-          // reads a file, so requiring a clone made answer collection depend on a checkout that can
-          // fail — and after a force-push it failed outright, so the review could not collect the
-          // very answers that would have unblocked it.
-          cwd: reviewerRoot,
-          outputSchema: answersOutputSchema,
-          model: MODELS.mapper,
-          // No tools: this prompt carries a PR comment written by someone else, and the job is
-          // pure text mapping over text already in the prompt. Nothing to read, nothing to run.
-          tools: 'none',
-          maxRetries: 0,
-          prompt: loadPrompt('answer-mapper.md', {
-            QUESTIONS: remaining
-              .map(
-                (q) =>
-                  `${q.ordinal}. ${q.text}${q.recommendation ? `\n   (recommended: ${q.recommendation})` : ''}`,
-              )
-              .join('\n'),
-            REPLY: comment.body,
-          }),
-        });
-        answers = new Map(
-          res.output.answers
-            .filter((a) => open.has(a.ordinal) && a.answer.trim() !== '')
-            .map((a) => [a.ordinal, a.answer]),
-        );
-        if (answers.size === 0) answers = null;
-      } catch (err) {
-        console.warn(`could not map reply ${comment.id} to answers: ${String(err)}`);
-      }
-    }
+    const answers = await answersFromReply(requireRound(ctx).id, comment, [...open.values()]);
     if (!answers) continue;
 
     for (const [ordinal, answer] of answers) {
@@ -151,6 +103,67 @@ async function pollAnswersOnce(ctx: Ctx, pending: QuestionRow[]): Promise<number
     console.log(`reply ${comment.id} from ${comment.authorLogin} answered ${answers.size} question(s)`);
   }
   return answered;
+}
+
+/**
+ * Read one reply as answers to the questions still open: numbered `1. <answer>` lines first, then
+ * "go with your recommendations", then a small model mapping free text onto the ordinals. Null when
+ * the reply answers nothing. Shared with the sweep, which reads replies from issue threads.
+ */
+export async function answersFromReply(
+  roundId: number,
+  comment: IssueComment,
+  remaining: QuestionRow[],
+): Promise<Map<number, string> | null> {
+  const expected = remaining.map((q) => q.ordinal);
+  let answers = parseAnswers(comment.body, expected)?.answers ?? null;
+  if (!answers && /\bgo with (your|the) recommendations?\b/i.test(comment.body)) {
+    answers = new Map(
+      remaining
+        .filter((q) => q.recommendation)
+        .map((q) => [q.ordinal, `(accepted recommendation) ${q.recommendation}`]),
+    );
+    if (answers.size === 0) answers = null;
+  }
+  if (!answers) {
+    // Free-text reply: map it to ordinals with a small model.
+    try {
+      const res = await runAgent({
+        roundId,
+        role: `answer-mapper:${comment.id}`,
+        // The reviewer's own directory, not the reviewed repo: this agent has no tools and never
+        // reads a file, so requiring a clone made answer collection depend on a checkout that can
+        // fail — and after a force-push it failed outright, so the review could not collect the
+        // very answers that would have unblocked it.
+        cwd: reviewerRoot,
+        outputSchema: answersOutputSchema,
+        model: MODELS.mapper,
+        // No tools: this prompt carries a comment written by someone else, and the job is
+        // pure text mapping over text already in the prompt. Nothing to read, nothing to run.
+        tools: 'none',
+        maxRetries: 0,
+        prompt: loadPrompt('answer-mapper.md', {
+          QUESTIONS: remaining
+            .map(
+              (q) =>
+                `${q.ordinal}. ${q.text}${q.recommendation ? `\n   (recommended: ${q.recommendation})` : ''}`,
+            )
+            .join('\n'),
+          REPLY: comment.body,
+        }),
+      });
+      const open = new Set(expected);
+      answers = new Map(
+        res.output.answers
+          .filter((a) => open.has(a.ordinal) && a.answer.trim() !== '')
+          .map((a) => [a.ordinal, a.answer]),
+      );
+      if (answers.size === 0) answers = null;
+    } catch (err) {
+      console.warn(`could not map reply ${comment.id} to answers: ${String(err)}`);
+    }
+  }
+  return answers;
 }
 
 export interface AwaitAnswersOptions {

@@ -84,6 +84,15 @@ export const judgeOutputSchema = z.object({
 });
 export type JudgeOutput = z.infer<typeof judgeOutputSchema>;
 
+export const ticketJudgeOutputSchema = z.object({
+  verdict: z.enum(['solved', 'needs_work']),
+  /** One or two sentences for the status page. */
+  summary: z.string(),
+  /** For the ticket's thread: what was checked, and on needs_work exactly what is missing and where. */
+  evidence: z.string(),
+});
+export type TicketJudgeOutput = z.infer<typeof ticketJudgeOutputSchema>;
+
 export const answersOutputSchema = z.object({
   answers: z.array(z.object({ ordinal: z.number(), answer: z.string() })),
   proceed: z.boolean(),

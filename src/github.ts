@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { CommitFacts } from './fix-commit.js';
 import { appAuthConfigured, installationToken } from './gh-auth.js';
@@ -229,4 +229,247 @@ export async function dispatchWorkflow(repoSlug: string, workflowFile: string, r
 export async function getViewerLogin(): Promise<string> {
   const res = await ghJson<{ login: string }>(['api', 'user']);
   return res.login;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Issues — the nightly sweep's output. A concern is an issue; the owner closing it asks for a
+// judge; the two long-lived issues per repo (digest, status) are edited in place every night.
+// Everything goes through `gh api` form fields (`-f`), which is how the PR comments above have
+// always been posted: a value is one argument however many lines it holds, and `name[]=` repeats
+// build an array.
+// ---------------------------------------------------------------------------------------------
+
+/** The commit at the tip of a branch, read without a checkout. */
+export async function getBranchHead(repoSlug: string, branch: string): Promise<string> {
+  const b = await ghJson<{ commit: { sha: string } }>(['api', `repos/${repoSlug}/branches/${branch}`]);
+  return b.commit.sha;
+}
+
+/** How many commits `base...head` spans, from the compare API (no checkout needed). */
+export async function compareCommitCount(repoSlug: string, baseSha: string, headSha: string): Promise<number> {
+  const c = await ghJson<{ total_commits: number }>(['api', `repos/${repoSlug}/compare/${baseSha}...${headSha}`]);
+  return c.total_commits;
+}
+
+export interface IssueInfo {
+  number: number;
+  nodeId: string;
+  state: 'open' | 'closed';
+  /** GitHub's close reason: `completed` (fixed) or `not_planned` (dismissed). Null while open. */
+  stateReason: 'completed' | 'not_planned' | 'reopened' | null;
+  title: string;
+  body: string;
+  labels: string[];
+  createdAt: string;
+  closedAt: string | null;
+}
+
+interface RawIssue {
+  number: number;
+  node_id: string;
+  state: string;
+  state_reason?: string | null;
+  title: string;
+  body: string | null;
+  labels: Array<{ name: string } | string>;
+  created_at: string;
+  closed_at: string | null;
+}
+
+function toIssueInfo(i: RawIssue): IssueInfo {
+  return {
+    number: i.number,
+    nodeId: i.node_id,
+    state: i.state === 'closed' ? 'closed' : 'open',
+    stateReason: (i.state_reason as IssueInfo['stateReason']) ?? null,
+    title: i.title,
+    body: i.body ?? '',
+    labels: i.labels.map((l) => (typeof l === 'string' ? l : l.name)),
+    createdAt: i.created_at,
+    closedAt: i.closed_at,
+  };
+}
+
+/** Open issues carrying a label, oldest first. Pull requests share the endpoint and are dropped. */
+export async function listOpenIssuesByLabel(repoSlug: string, label: string): Promise<IssueInfo[]> {
+  const rows = await ghJson<Array<RawIssue & { pull_request?: unknown }>>([
+    'api',
+    `repos/${repoSlug}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=100`,
+    '--paginate',
+  ]);
+  return rows
+    .filter((r) => r.pull_request === undefined || r.pull_request === null)
+    .map(toIssueInfo)
+    .sort((a, b) => a.number - b.number);
+}
+
+export async function getIssue(repoSlug: string, number: number): Promise<IssueInfo> {
+  return toIssueInfo(await ghJson<RawIssue>(['api', `repos/${repoSlug}/issues/${number}`]));
+}
+
+export async function createIssue(
+  repoSlug: string,
+  input: { title: string; body: string; labels: string[] },
+): Promise<IssueInfo> {
+  const args = ['api', '-X', 'POST', `repos/${repoSlug}/issues`, '-f', `title=${input.title}`, '-f', `body=${input.body}`];
+  for (const label of input.labels) args.push('-f', `labels[]=${label}`);
+  return toIssueInfo(await ghJson<RawIssue>(args));
+}
+
+export interface IssuePatch {
+  title?: string;
+  body?: string;
+  state?: 'open' | 'closed';
+  /** Only meaningful with `state: 'closed'`. */
+  stateReason?: 'completed' | 'not_planned';
+  /** Replaces the whole label set. */
+  labels?: string[];
+}
+
+export async function updateIssue(repoSlug: string, number: number, patch: IssuePatch): Promise<void> {
+  // JSON on stdin rather than form fields: `labels: []` (take every label off) has no `-f` spelling,
+  // and gh refuses to mix `--input` with `-f`, so the whole patch goes one way.
+  const body: Record<string, unknown> = {};
+  if (patch.title !== undefined) body.title = patch.title;
+  if (patch.body !== undefined) body.body = patch.body;
+  if (patch.state !== undefined) body.state = patch.state;
+  if (patch.stateReason !== undefined) body.state_reason = patch.stateReason;
+  if (patch.labels !== undefined) body.labels = patch.labels;
+  await ghWithStdin(['api', '-X', 'PATCH', `repos/${repoSlug}/issues/${number}`, '--input', '-'], JSON.stringify(body));
+}
+
+/**
+ * Make sure a label exists before an issue asks for it: GitHub creates unknown labels on an issue
+ * with a random colour, and a repo's label list is the owner's, so the sweep's labels are declared
+ * once with a colour and a description instead. Existing labels are left exactly as they are.
+ */
+export async function ensureLabel(
+  repoSlug: string,
+  label: { name: string; color: string; description: string },
+): Promise<void> {
+  try {
+    await gh([
+      'api',
+      '-X',
+      'POST',
+      `repos/${repoSlug}/labels`,
+      '-f',
+      `name=${label.name}`,
+      '-f',
+      `color=${label.color}`,
+      '-f',
+      `description=${label.description}`,
+    ]);
+  } catch (err) {
+    if (!/422|already_exists/.test(String(err))) throw err;
+  }
+}
+
+/** All comments on an issue, oldest first, with who wrote them and what GitHub says they are to the repo. */
+export async function listIssueComments(repoSlug: string, number: number): Promise<IssueComment[]> {
+  const comments = await ghJson<
+    Array<{ id: number; body: string; created_at: string; user: { login: string }; author_association?: string }>
+  >(['api', `repos/${repoSlug}/issues/${number}/comments`, '--paginate']);
+  return comments
+    .map((c) => ({
+      id: c.id,
+      body: c.body,
+      createdAt: c.created_at,
+      authorLogin: c.user.login,
+      authorAssociation: c.author_association ?? 'NONE',
+    }))
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+/**
+ * The events on an issue that say what closed it: a `closed` event names the commit when a commit
+ * message did it; a `cross-referenced` event names a PR that mentioned it, which is how a merged
+ * PR with `fixes #N` shows up; a `referenced` event names a commit that mentioned it.
+ */
+export interface IssueTimelineEvent {
+  event: string;
+  createdAt: string | null;
+  commitSha: string | null;
+  /** For `cross-referenced`: the issue or PR that referenced this one. */
+  source: { number: number; isPullRequest: boolean } | null;
+}
+
+export async function listIssueTimeline(repoSlug: string, number: number): Promise<IssueTimelineEvent[]> {
+  const events = await ghJson<
+    Array<{
+      event: string;
+      created_at?: string;
+      commit_id?: string | null;
+      source?: { issue?: { number: number; pull_request?: unknown } } | null;
+    }>
+  >(['api', `repos/${repoSlug}/issues/${number}/timeline`, '--paginate']);
+  return events.map((e) => ({
+    event: e.event,
+    createdAt: e.created_at ?? null,
+    commitSha: e.commit_id ?? null,
+    source: e.source?.issue
+      ? { number: e.source.issue.number, isPullRequest: e.source.issue.pull_request != null }
+      : null,
+  }));
+}
+
+export interface MergedPrFacts {
+  number: number;
+  title: string;
+  body: string;
+  merged: boolean;
+  mergeCommitSha: string | null;
+}
+
+export async function getPrFacts(repoSlug: string, number: number): Promise<MergedPrFacts> {
+  const pr = await ghJson<{
+    number: number;
+    title: string;
+    body: string | null;
+    merged: boolean;
+    merge_commit_sha: string | null;
+  }>(['api', `repos/${repoSlug}/pulls/${number}`]);
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body ?? '',
+    merged: pr.merged,
+    mergeCommitSha: pr.merged ? pr.merge_commit_sha : null,
+  };
+}
+
+/**
+ * Pin an issue to the top of the repo's issues page. GitHub allows three; a fourth is refused,
+ * and so is pinning the same issue twice. Both are fine to ignore — the status page works unpinned.
+ */
+export async function pinIssue(issueNodeId: string): Promise<boolean> {
+  try {
+    await gh([
+      'api',
+      'graphql',
+      '-f',
+      'query=mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { id } } }',
+      '-f',
+      `id=${issueNodeId}`,
+    ]);
+    return true;
+  } catch (err) {
+    console.warn(`could not pin the issue (${String(err).split('\n')[0]})`);
+    return false;
+  }
+}
+
+/** `gh api --input -` with the request body on stdin, for the shapes form fields cannot express. */
+async function ghWithStdin(args: string[], input: string): Promise<string> {
+  const env = appAuthConfigured() ? { ...process.env, GH_TOKEN: await installationToken() } : process.env;
+  return new Promise((resolve, reject) => {
+    const child = spawn('gh', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let errOut = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (errOut += d));
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(`gh exited ${code}: ${errOut}`))));
+    child.stdin.end(input);
+  });
 }

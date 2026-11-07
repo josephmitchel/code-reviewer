@@ -2,12 +2,27 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import { loadPrompt, MODELS, runAgent } from '../agents/run-agent.js';
 import { synthesisOutputSchema, type SynthesisOutput } from '../agents/schemas.js';
-import { renderPolicies, renderRepoStandards, renderTestResults } from './audit.js';
-import { requireRound, requireWorkspace, type Ctx } from './context.js';
+import { promptPath, renderPolicies, renderRepoStandards, renderTestResults, type AuditMode } from './audit.js';
+import { requireRound, requireWorkspace, type Ctx, type RunCtx } from './context.js';
 
+/** Who the round's concerns and questions belong to. */
+export type SynthesisOrigin = { reviewId: number; sweepId?: undefined } | { sweepId: number; reviewId?: undefined };
+
+export interface SynthesisOptions {
+  mode: AuditMode;
+  origin: SynthesisOrigin;
+}
+
+/** Synthesize the current round of a PR review. */
 export async function runSynthesis(ctx: Ctx): Promise<void> {
+  await synthesizeRound(ctx, { mode: 'pr', origin: { reviewId: ctx.review.id } });
+}
+
+/** Turn the round's raw findings into concern actions and questions. Shared by PR reviews and sweeps. */
+export async function synthesizeRound(ctx: RunCtx, options: SynthesisOptions): Promise<void> {
   const round = requireRound(ctx);
   if (round.synthesizedAt) return;
+  const { origin } = options;
 
   const findingRows = await db
     .select()
@@ -30,7 +45,7 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
 
   const failedSuites = (round.testResults ?? []).filter((t) => !t.passed);
 
-  const basePrompt = loadPrompt('synthesis.md', {
+  const basePrompt = loadPrompt(promptPath(options.mode, 'synthesis.md'), {
     ROUND_NO: String(round.roundNo),
     ROUND_KIND: round.kind,
     FINDINGS: JSON.stringify(
@@ -92,7 +107,8 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
         }
         await tx.insert(schema.concerns).values({
           repoId: ctx.repo.id,
-          originReviewId: ctx.review.id,
+          originReviewId: origin.reviewId ?? null,
+          originSweepId: origin.sweepId ?? null,
           slug: action.slug,
           title: action.title,
           body: action.body,
@@ -140,11 +156,17 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
 
     // User-facing question ordinals are unique across the whole review, so replies like
     // "3. <answer>" stay unambiguous even when questions from earlier rounds are still pending.
-    const priorOrdinals = await tx
-      .select({ ordinal: schema.questions.ordinal })
-      .from(schema.questions)
-      .where(eq(schema.questions.reviewId, ctx.review.id));
+    // A sweep numbers them per concern instead: each concern's questions sit in its own issue,
+    // and the reply is read from that issue's thread.
+    const priorOrdinals =
+      origin.reviewId !== undefined
+        ? await tx
+            .select({ ordinal: schema.questions.ordinal })
+            .from(schema.questions)
+            .where(eq(schema.questions.reviewId, origin.reviewId))
+        : [];
     let ordinal = priorOrdinals.reduce((m, r) => Math.max(m, r.ordinal), 0) + 1;
+    const owner = { reviewId: origin.reviewId ?? null, sweepId: origin.sweepId ?? null };
     for (const q of output!.questions) {
       const concern = q.concern_slug
         ? (await tx
@@ -154,12 +176,27 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
               and(eq(schema.concerns.repoId, ctx.repo.id), eq(schema.concerns.slug, q.concern_slug)),
             ))[0]
         : undefined;
-      if (q.user_facing) {
+      let userFacing = q.user_facing;
+      if (userFacing && origin.sweepId !== undefined && !concern) {
+        // A sweep has no page of its own to ask on: questions live in concern issues. One without a
+        // concern has nowhere to go, so it is kept as guidance rather than lost — and never asked.
+        console.warn(`sweep question has no concern to live in — recorded as guidance only: ${q.text}`);
+        userFacing = false;
+      }
+      if (userFacing) {
+        let next = ordinal++;
+        if (origin.sweepId !== undefined && concern) {
+          const own = await tx
+            .select({ ordinal: schema.questions.ordinal })
+            .from(schema.questions)
+            .where(eq(schema.questions.concernId, concern.id));
+          next = own.reduce((m, r) => Math.max(m, r.ordinal), 0) + 1;
+        }
         await tx.insert(schema.questions).values({
-          reviewId: ctx.review.id,
+          ...owner,
           roundId: round.id,
           concernId: concern?.id ?? null,
-          ordinal: ordinal++,
+          ordinal: next,
           text: q.text,
           recommendation: q.recommendation,
           userFacing: true,
@@ -167,9 +204,10 @@ export async function runSynthesis(ctx: Ctx): Promise<void> {
       } else {
         // Not a user-facing functionality decision: apply the recommendation immediately.
         // Deliberately no policies row — auto-applied decisions are not owner decisions
-        // and stay vetoable; only real user answers become repo policy.
+        // and stay vetoable; only real user answers become repo policy. In a sweep nothing
+        // applies it; the recommendation is shown in the issue as the suggested direction.
         await tx.insert(schema.questions).values({
-          reviewId: ctx.review.id,
+          ...owner,
           roundId: round.id,
           concernId: concern?.id ?? null,
           ordinal: 0,

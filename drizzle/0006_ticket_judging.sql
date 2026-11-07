@@ -1,0 +1,1 @@
+ALTER TYPE "public"."sweep_state" ADD VALUE 'judging_tickets' BEFORE 'publishing';

@@ -27,6 +27,25 @@ export const reviewState = pgEnum('review_state', [
 ]);
 
 export const roundKind = pgEnum('round_kind', ['full', 'verification']);
+
+/**
+ * A nightly sweep: audit what landed on the default branch since the last sweep, file the
+ * concerns as GitHub issues, judge the issues the owner closed. It never fixes and never gates.
+ */
+export const sweepState = pgEnum('sweep_state', [
+  'pending',
+  'intake',
+  'judging',
+  'answering',
+  'auditing',
+  'synthesizing',
+  // After synthesis on purpose: a ticket judge can point at the concerns tonight's audit raised
+  // inside the ticket's own PR.
+  'judging_tickets',
+  'publishing',
+  'done',
+  'failed',
+]);
 export const concernLevel = pgEnum('concern_level', ['major', 'moderate', 'minor']);
 export const concernStatus = pgEnum('concern_status', ['open', 'resolved']);
 export const sessionStatus = pgEnum('session_status', ['running', 'succeeded', 'failed']);
@@ -77,7 +96,59 @@ export const repos = pgTable('repos', {
   redundancy: integer('redundancy').notNull().default(1),
   harnessNotes: text('harness_notes'),
   extraContext: text('extra_context'),
+  // The two long-lived issues the sweep keeps per repo: a rolling list of minor findings, and the
+  // status page that is the owner's morning check. Created on the first sweep, edited ever after.
+  digestIssueNumber: integer('digest_issue_number'),
+  statusIssueNumber: integer('status_issue_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export interface JudgedIssue {
+  slug: string;
+  issueNumber: number;
+  verdict: 'resolved' | 'unresolved' | 'dismissed';
+  note: string;
+}
+
+/** A ticket (any issue, whoever opened it) that carried `needs-judging` and got a verdict. */
+export interface JudgedTicket {
+  issueNumber: number;
+  title: string;
+  verdict: 'solved' | 'needs_work' | 'nothing_to_judge';
+  /** The merged PRs the verdict was based on. */
+  prNumbers: number[];
+}
+
+/** What one sweep did, kept for the status issue and for `code-reviewer status`. */
+export interface SweepSummary {
+  judged: JudgedIssue[];
+  /** Absent on sweeps recorded before ticket judging existed. */
+  tickets?: JudgedTicket[];
+  answered: number;
+  /** Issues this sweep opened, by concern slug. */
+  opened: Array<{ slug: string; issueNumber: number; level: string }>;
+  /** Issues this sweep closed because the auditors found the concern fixed. */
+  closedByAudit: Array<{ slug: string; issueNumber: number }>;
+  commits: number;
+}
+
+export const sweeps = pgTable('sweeps', {
+  id: serial('id').primaryKey(),
+  repoId: integer('repo_id')
+    .notNull()
+    .references(() => repos.id),
+  branch: text('branch').notNull(),
+  // The last sweep's head. The diff base...head is what this sweep audits.
+  baseSha: text('base_sha').notNull(),
+  // Null until intake reads the branch; the same SHA as base means nothing landed and the audit is skipped.
+  headSha: text('head_sha'),
+  state: sweepState('state').notNull().default('pending'),
+  currentRoundId: integer('current_round_id'),
+  summary: jsonb('summary').$type<SweepSummary>(),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
 });
 
 export const reviews = pgTable(
@@ -100,9 +171,9 @@ export const reviews = pgTable(
 
 export const rounds = pgTable('rounds', {
   id: serial('id').primaryKey(),
-  reviewId: integer('review_id')
-    .notNull()
-    .references(() => reviews.id),
+  // Exactly one of these is set: a round belongs to a PR review or to a nightly sweep.
+  reviewId: integer('review_id').references(() => reviews.id),
+  sweepId: integer('sweep_id').references(() => sweeps.id),
   roundNo: integer('round_no').notNull(),
   // 'full': audit the whole PR diff. 'verification': audit only the previous round's fix diff.
   kind: roundKind('kind').notNull().default('full'),
@@ -132,6 +203,10 @@ export const concerns = pgTable(
       .references(() => repos.id),
     // Nullable: concerns outlive their review (reset deletes the review but keeps concerns).
     originReviewId: integer('origin_review_id').references(() => reviews.id),
+    originSweepId: integer('origin_sweep_id').references(() => sweeps.id),
+    // The GitHub issue a sweep filed for this concern. Only majors and moderates get one; minors
+    // live in the repo's digest issue. The owner closing it is what asks for a judge.
+    issueNumber: integer('issue_number'),
     slug: text('slug').notNull(),
     title: text('title').notNull(),
     body: text('body').notNull(),
@@ -164,14 +239,16 @@ export const findings = pgTable('findings', {
 
 export const questions = pgTable('questions', {
   id: serial('id').primaryKey(),
-  reviewId: integer('review_id')
-    .notNull()
-    .references(() => reviews.id),
+  // Exactly one of these is set, like rounds.
+  reviewId: integer('review_id').references(() => reviews.id),
+  sweepId: integer('sweep_id').references(() => sweeps.id),
   roundId: integer('round_id')
     .notNull()
     .references(() => rounds.id),
   concernId: integer('concern_id').references(() => concerns.id),
-  ordinal: integer('ordinal').notNull(), // unique per review for user-facing questions; 0 for auto-applied
+  // User-facing questions: unique per review in PR mode, unique per concern in sweep mode (they
+  // are numbered inside the concern's issue). 0 for auto-applied.
+  ordinal: integer('ordinal').notNull(),
   text: text('text').notNull(),
   recommendation: text('recommendation'),
   // Only questions about user-facing UI/functionality changes wait for the owner;

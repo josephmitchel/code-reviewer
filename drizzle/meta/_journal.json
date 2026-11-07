@@ -36,6 +36,20 @@
       "when": 1791247792041,
       "tag": "0004_perfect_purple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794087846870,
+      "tag": "0005_nightly_sweeps",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794089073992,
+      "tag": "0006_ticket_judging",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,63 @@
+# Copy this into the repository you want swept, as .github/workflows/nightly-sweep.yml.
+#
+# The nightly sweep replaces per-PR review with an advisory backlog. Every night it:
+#   1. judges every reviewer issue you closed since the last sweep — a judge agent reads the code
+#      and either confirms the fix or reopens the issue with evidence; an issue closed as
+#      "not planned" is a dismissal and becomes a repo policy instead;
+#   2. reads your replies on issues labelled `needs-answer` and saves them as policy;
+#   3. audits what landed on the default branch since the last sweep (ISO/IEC 25010, ten auditors)
+#      and files each major or moderate concern as an issue, minors into one digest issue;
+#   4. rewrites the pinned "Code reviewer status" issue, which is your morning check.
+# It never pushes a fix and never sets a commit status, so nothing blocks a merge.
+#
+# The `review-now` job is the escape hatch: put the `review-now` label on a PR to get the full
+# per-PR review (questions, fixes, gate) on demand. Delete that job if you never want it.
+name: Code Reviewer sweep
+
+on:
+  schedule:
+    - cron: '17 7 * * *' # 07:17 UTC — adjust to a quiet hour in your time zone
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  sweep:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # One sweep at a time per repo. A second run while one is still going waits for it.
+    concurrency:
+      group: code-reviewer-sweep-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    # A repo whose suites need a real database declares it here (see code-review.yml).
+    steps:
+      - uses: josephmitchel/code-reviewer@main
+        with:
+          command: sweep
+          database-url: ${{ secrets.DATABASE_URL }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+          # repo-env: |
+          #   TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/myapp_test
+
+  review-now:
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'labeled' &&
+      github.event.label.name == 'review-now' && github.event.pull_request.draft == false
+    concurrency:
+      group: code-reviewer-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: josephmitchel/code-reviewer@main
+        with:
+          pr: ${{ github.event.pull_request.number }}
+          database-url: ${{ secrets.DATABASE_URL }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}

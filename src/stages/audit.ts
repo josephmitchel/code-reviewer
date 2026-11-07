@@ -8,7 +8,30 @@ import { changedFilePaths } from '../workspace.js';
 import { auditorOutputSchema, scoutOutputSchema } from '../agents/schemas.js';
 import type { TestResult } from '../db/schema.js';
 import { ensurePrSummaryComment } from './pr-summary.js';
-import { AGENT_CONCURRENCY, AUDITOR_CHARACTERISTICS, requireRound, requireWorkspace, type Ctx } from './context.js';
+import {
+  AGENT_CONCURRENCY,
+  AUDITOR_CHARACTERISTICS,
+  requireRound,
+  requireWorkspace,
+  type Ctx,
+  type RunCtx,
+} from './context.js';
+
+/** Which flow a round belongs to. Decides the prompts: a PR branch and a default-branch sweep are described differently. */
+export type AuditMode = 'pr' | 'sweep';
+
+export interface AuditOptions {
+  mode: AuditMode;
+  /** The files the round's diff touches — what the scout starts from. */
+  changedFiles: () => Promise<string[]>;
+  /** Runs once the scout has produced the round's summary (the PR flow posts its patch notes here). */
+  onScouted?: () => Promise<void>;
+}
+
+/** The PR flow's prompts live at the top of `prompts/`; the sweep's under `prompts/sweep/`. */
+export function promptPath(mode: AuditMode, name: string): string {
+  return mode === 'sweep' ? `sweep/${name}` : name;
+}
 
 export function renderTestResults(results: TestResult[] | null): string {
   if (!results || results.length === 0) return 'No test suites are configured for this repo.';
@@ -41,7 +64,17 @@ export async function renderPolicies(repoId: number): Promise<string> {
   return rows.map((p) => `- Q: ${p.question}\n  A: ${p.answer}`).join('\n');
 }
 
+/** Audit the current round of a PR review. */
 export async function runAudit(ctx: Ctx): Promise<void> {
+  await auditRound(ctx, {
+    mode: 'pr',
+    changedFiles: async () => (await getPr(ctx.repo.slug, ctx.review.prNumber)).changedFiles,
+    onScouted: () => ensurePrSummaryComment(ctx),
+  });
+}
+
+/** Scout the blast radius, then run the ten auditors over it. Shared by PR reviews and sweeps. */
+export async function auditRound(ctx: RunCtx, options: AuditOptions): Promise<void> {
   const round = requireRound(ctx);
   const workspace = requireWorkspace(ctx);
 
@@ -54,16 +87,16 @@ export async function runAudit(ctx: Ctx): Promise<void> {
       await db.update(schema.rounds).set({ blastRadius }).where(eq(schema.rounds.id, round.id));
       ctx.round = { ...round, blastRadius };
     } else {
-      const pr = await getPr(ctx.repo.slug, ctx.review.prNumber);
+      const changed = await options.changedFiles();
       const scout = await runAgent({
         roundId: round.id,
         role: 'scout',
         cwd: workspace,
         outputSchema: scoutOutputSchema,
-        prompt: loadPrompt('scout.md', {
+        prompt: loadPrompt(promptPath(options.mode, 'scout.md'), {
           HEAD_SHA: round.headSha,
           BASE_SHA: round.baseSha,
-          CHANGED_FILES: pr.changedFiles.map((f) => `- ${f}`).join('\n'),
+          CHANGED_FILES: changed.map((f) => `- ${f}`).join('\n'),
         }),
       });
       blastRadius = scout.output.files;
@@ -76,8 +109,8 @@ export async function runAudit(ctx: Ctx): Promise<void> {
   }
   console.log(`blast radius (${round.kind}): ${blastRadius.length} files`);
 
-  if (round.kind !== 'verification') {
-    await ensurePrSummaryComment(ctx);
+  if (round.kind !== 'verification' && options.onScouted) {
+    await options.onScouted();
   }
 
   const blastPaths = new Set(blastRadius.map((f) => f.path));
@@ -97,7 +130,11 @@ export async function runAudit(ctx: Ctx): Promise<void> {
   // A verification round's scope is one fix commit's diff — redundant passes add cost, not recall.
   const redundancy = round.kind === 'verification' ? 1 : Math.max(1, ctx.repo.redundancy);
   const preamble =
-    round.kind === 'verification' ? 'shared/auditor-preamble-verification.md' : 'shared/auditor-preamble.md';
+    round.kind === 'verification'
+      ? 'shared/auditor-preamble-verification.md'
+      : options.mode === 'sweep'
+        ? 'sweep/auditor-preamble.md'
+        : 'shared/auditor-preamble.md';
   const jobs: Array<() => Promise<void>> = [];
   for (const characteristic of AUDITOR_CHARACTERISTICS) {
     const priors = relevantConcerns.filter((c) => c.characteristics.includes(characteristic));

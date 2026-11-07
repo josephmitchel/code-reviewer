@@ -1,6 +1,6 @@
 # Code Reviewer
 
-A standalone, repo-agnostic multi-agent PR review service. It audits a pull request's diff (plus blast radius) against the nine ISO/IEC 25010:2023 quality characteristics plus test quality, posts a report with questions to the PR, plans and pushes fixes after the owner replies, verifies them with judge agents, and gates the PR with a `code-reviewer/gate` commit status on the exact verified head SHA.
+A standalone, repo-agnostic multi-agent code review service with two modes. The **PR loop** audits a pull request's diff (plus blast radius) against the nine ISO/IEC 25010:2023 quality characteristics plus test quality, posts a report with questions to the PR, plans and pushes fixes after the owner replies, verifies them with judge agents, and gates the PR with a `code-reviewer/gate` commit status on the exact verified head SHA. The **nightly sweep** runs the same audit over what landed on the default branch each day and files the concerns as GitHub issues, judging the ones the owner closes — advisory, never blocking.
 
 Extracted from SpendRight's in-repo audit system. State lives in Postgres (`code_reviewer` database); the process is stateless — kill it anywhere and re-run the same command to resume.
 
@@ -54,7 +54,47 @@ One database serves every project. A `CODING_STANDARDS.md` at the repo root is r
 commit on every round and put in front of the auditors, the synthesis and the fix planner beside
 those policies, so written rules and answered questions bind the same way.
 
-## The loop
+## The nightly sweep (advisory mode)
+
+The PR loop above gates every PR on a full review, fix cycle and verification — tens of minutes
+to hours on the critical path of a merge. The sweep keeps the scrutiny and drops the blocking:
+once a night it audits what landed on the default branch and files what it finds as GitHub
+issues. It never pushes a fix and never sets a commit status.
+
+```
+judge closed issues → read answers → audit base...head → synthesis → judge `needs-judging` tickets → issues / digest / status
+```
+
+- **Scope:** the default branch's diff since the previous sweep (the first sweep audits nothing
+  and only sets up the issues). An empty diff still judges, reads answers and republishes.
+- **Issues:** every major or moderate concern becomes an issue labelled `code-reviewer`,
+  `level: …` and `quality: …`, with locations linked at the commit the sweep saw. Minor
+  concerns go in one rolling "Code reviewer: minor findings" issue; tick a box there to dismiss one.
+- **Fixing:** close the issue (`fixes #N` in a PR). The next sweep sends a judge: the concern is
+  resolved with a ✅ comment, or the issue is reopened with the judge's evidence.
+- **Dismissing:** close the issue as *not planned* with a comment. The reason is saved as a repo
+  policy and the auditors never raise it again.
+- **Questions:** a concern whose fix needs a product decision gets the question in its issue and
+  the `needs-answer` label. Reply in the thread (`1. <answer>` lines, or free text); the answer
+  becomes policy. Everything with a technical default is shown as the suggested direction instead.
+- **Any ticket, judged:** a ticket anyone opened (a coding agent working a spec, say) is not closed
+  by its PR. The PR says `Addresses #N`, and once it is merged the ticket is labelled
+  `needs-judging`. The sweep's judge reads the ticket as the spec and the merged PR as the
+  delivery, with the concerns tonight's audit raised inside that PR's files in front of it, and
+  either closes the ticket or relabels it `needs-work` with a file-by-file brief for whoever picks
+  it up next. Closing a ticket by hand is final. `examples/issue-tracker-closing.md` is the
+  paragraph to put in a repo's `docs/agents/issue-tracker.md` so the Matt Pocock skills do this.
+- **Morning check:** one pinned "Code reviewer status" issue per repo, rewritten every night:
+  what landed, what was opened, verified, reopened or dismissed, which tickets were judged, and
+  what is waiting on you.
+
+Run it with `node bin/code-reviewer.mjs sweep owner/name`, or on Actions with
+`examples/workflows/nightly-sweep.yml` (`command: sweep`). That workflow also carries a
+`review-now` job: label a PR `review-now` to get the full PR review on demand. The two modes share
+the database, the concerns and the policies, so an answer given on a PR binds the sweep and vice
+versa; running both on the same repo at the same moment is not supported.
+
+## The PR loop
 
 ```
 intake → audit (scout + 10 auditors) → synthesis ──┬─ clean → gate (commit status) → passed
@@ -71,7 +111,8 @@ intake → audit (scout + 10 auditors) → synthesis ──┬─ clean → gate
 
 ## Layout
 
-- `src/review-loop.ts` — state machine driver; `src/stages/*` — one module per stage
+- `src/review-loop.ts` — PR state machine driver; `src/stages/*` — one module per stage (audit and synthesis are shared)
+- `src/sweep/*` — the nightly sweep: `loop.ts` driver, `judge.ts` (closed reviewer issues), `tickets.ts` (`needs-judging` tickets), `answers.ts`, `publish.ts`, `render.ts` (issue/digest/status text)
 - `src/agents/run-agent.ts` — Agent SDK wrapper (structured output, session recording, resume)
-- `prompts/` — auditor definitions (ISO 25010 verbatim) and pipeline role prompts
-- `src/db/schema.ts` — repos, reviews, rounds, concerns, findings, questions, policies, agent_sessions, github_artifacts
+- `prompts/` — auditor definitions (ISO 25010 verbatim) and pipeline role prompts; `prompts/sweep/` — the sweep's framing of scout, auditor, synthesis and judge
+- `src/db/schema.ts` — repos, reviews, sweeps, rounds, concerns, findings, questions, policies, agent_sessions, github_artifacts

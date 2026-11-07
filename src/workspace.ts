@@ -161,6 +161,17 @@ export async function remoteBranchSha(dir: string, branch: string): Promise<stri
   return git(dir, ['rev-parse', `origin/${branch}`]);
 }
 
+/** Whether `sha` is reachable from `head` — a merge that has landed on the branch under review. */
+export async function isAncestor(dir: string, sha: string, head: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['merge-base', '--is-ancestor', sha, head], { cwd: dir });
+    return true;
+  } catch (err) {
+    // Exit 1 is "no"; anything else (an unknown SHA, say) is also "no" for our purposes.
+    return false;
+  }
+}
+
 /** File paths touched between two commits (base...head). */
 export async function changedFilePaths(dir: string, baseSha: string, headSha: string): Promise<string[]> {
   const out = await git(dir, ['diff', '--name-only', `${baseSha}...${headSha}`]);

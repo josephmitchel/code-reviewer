@@ -13,6 +13,7 @@ import { markGate, progressStep } from './stages/progress.js';
 import { postFailureNotice } from './stages/report.js';
 import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
+import { runSweep } from './sweep/loop.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
 
@@ -20,6 +21,9 @@ Usage:
   code-reviewer run <owner/repo> <pr#> [--once] run (or resume) the review loop for a PR
       --once                                    return instead of waiting for answers or the
                                                 review slot (for CI; prints the outcome)
+  code-reviewer sweep <owner/repo>              run (or resume) tonight's sweep: judge closed
+                                                issues, audit what landed on the default branch,
+                                                file concerns as issues (never fixes, never gates)
   code-reviewer migrate                        apply pending migrations (advisory-locked)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
@@ -37,7 +41,7 @@ Usage:
 
 // The commands CI runs unattended. The admin ones print tables and confirmations for a person at
 // a terminal, where a timestamp on every line is only noise.
-const STAMPED = new Set(['run', 'migrate', 'next', 'abandon', 'carry-gate']);
+const STAMPED = new Set(['run', 'sweep', 'migrate', 'next', 'abandon', 'carry-gate']);
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -67,6 +71,18 @@ async function main() {
       // it wait for the scheduled sweep. A review that threw is covered by the sweep instead.
       const dispatch = process.env.REVIEWER_DISPATCH_WORKFLOW;
       if (outcome === 'passed' && dispatch) await handOffToQueue(slug, dispatch);
+      break;
+    }
+    case 'sweep': {
+      const [slug, ...extra] = rest;
+      if (!slug || extra.length > 0) return usageExit();
+      configureAppAuth(slug);
+      const stopHeartbeat = startHeartbeat();
+      try {
+        printRaw(`outcome: ${await runSweep(slug)}`);
+      } finally {
+        stopHeartbeat();
+      }
       break;
     }
     case 'migrate':
@@ -356,9 +372,26 @@ async function showStatus(slug?: string): Promise<void> {
         `  PR #${r.prNumber} [${r.state}] branch ${r.prBranch}${r.error ? ` — error: ${r.error.slice(0, 120)}` : ''}`,
       );
     }
+    const sweeps = await db
+      .select()
+      .from(schema.sweeps)
+      .where(eq(schema.sweeps.repoId, repo.id))
+      .orderBy(desc(schema.sweeps.id))
+      .limit(5);
+    for (const s of sweeps) {
+      const range = s.headSha ? `${s.baseSha.slice(0, 10)}...${s.headSha.slice(0, 10)}` : `from ${s.baseSha.slice(0, 10)}`;
+      const opened = s.summary?.opened.length ?? 0;
+      console.log(
+        `  sweep ${s.id} [${s.state}] ${s.branch} ${range}, ${s.createdAt.toISOString().slice(0, 10)}` +
+          `${s.state === 'done' ? `, opened ${opened}, judged ${s.summary?.judged.length ?? 0}` : ''}` +
+          `${s.error ? ` — error: ${s.error.slice(0, 120)}` : ''}`,
+      );
+    }
+    if (repo.statusIssueNumber) console.log(`  status issue: #${repo.statusIssueNumber}, digest: #${repo.digestIssueNumber ?? '-'}`);
     const open = await db.select().from(schema.concerns).where(eq(schema.concerns.repoId, repo.id));
     const openCount = open.filter((c) => c.status === 'open').length;
-    console.log(`  concerns: ${openCount} open, ${open.length - openCount} resolved`);
+    const withIssue = open.filter((c) => c.status === 'open' && c.issueNumber !== null).length;
+    console.log(`  concerns: ${openCount} open (${withIssue} as issues), ${open.length - openCount} resolved`);
   }
 }
 

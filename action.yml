@@ -15,9 +15,12 @@ inputs:
     default: ''
   command:
     description: >-
-      `run` (the default) reviews. `carry-gate` only moves a passed review's gate onto the PR's
-      new head when that head holds already-reviewed code, for a job triggered by a push. It never
-      starts or advances a review, and needs `pr`.
+      `run` (the default) reviews a PR. `sweep` runs the nightly sweep: judges the reviewer
+      issues the owner closed, audits what landed on the default branch since the last sweep, and
+      files concerns as issues — it never fixes and never gates, and ignores `pr`. `carry-gate`
+      only moves a passed review's gate onto the PR's new head when that head holds
+      already-reviewed code, for a job triggered by a push. It never starts or advances a
+      review, and needs `pr`.
     default: run
   database-url:
     description: Postgres connection string holding the reviewer's state.
@@ -72,7 +75,7 @@ inputs:
 
 outputs:
   outcome:
-    description: passed | awaiting_answers | queued | skipped
+    description: passed | awaiting_answers | queued | skipped | swept
     value: ${{ steps.review.outputs.outcome }}
 
 runs:
@@ -149,6 +152,12 @@ runs:
         set -euo pipefail
         case "$COMMAND" in
           run) ;;
+          sweep)
+            node bin/code-reviewer.mjs sweep "$REPO" | tee review.log
+            OUTCOME="$(grep -oE '^outcome: [a-z_]+' review.log | tail -1 | cut -d' ' -f2 || true)"
+            echo "outcome=${OUTCOME:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "### Code Reviewer sweep: $REPO — ${OUTCOME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0 ;;
           carry-gate)
             # Before the `pr` output on purpose: there is no review stage here for the cleanup
             # step to record, whatever happens.
