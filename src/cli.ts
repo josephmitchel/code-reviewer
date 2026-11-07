@@ -14,6 +14,7 @@ import { postFailureNotice } from './stages/report.js';
 import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
 import { runSweep } from './sweep/loop.js';
+import { runLanded } from './landed.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
 
@@ -24,6 +25,8 @@ Usage:
   code-reviewer sweep <owner/repo>              run (or resume) tonight's sweep: judge closed
                                                 issues, audit what landed on the default branch,
                                                 file concerns as issues (never fixes, never gates)
+  code-reviewer landed <owner/repo> <pr#>       a PR merged: label the tickets it addresses
+                                                needs-judging and lift their blocking edges
   code-reviewer migrate                        apply pending migrations (advisory-locked)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
@@ -41,7 +44,7 @@ Usage:
 
 // The commands CI runs unattended. The admin ones print tables and confirmations for a person at
 // a terminal, where a timestamp on every line is only noise.
-const STAMPED = new Set(['run', 'sweep', 'migrate', 'next', 'abandon', 'carry-gate']);
+const STAMPED = new Set(['run', 'sweep', 'landed', 'migrate', 'next', 'abandon', 'carry-gate']);
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -83,6 +86,13 @@ async function main() {
       } finally {
         stopHeartbeat();
       }
+      break;
+    }
+    case 'landed': {
+      const [slug, pr] = rest;
+      if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
+      configureAppAuth(slug);
+      await runLanded(slug, Number(pr));
       break;
     }
     case 'migrate':

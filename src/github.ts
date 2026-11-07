@@ -338,6 +338,53 @@ export async function updateIssue(repoSlug: string, number: number, patch: Issue
   await ghWithStdin(['api', '-X', 'PATCH', `repos/${repoSlug}/issues/${number}`, '--input', '-'], JSON.stringify(body));
 }
 
+export async function addIssueLabels(repoSlug: string, number: number, labels: string[]): Promise<void> {
+  if (labels.length === 0) return;
+  const args = ['api', '-X', 'POST', `repos/${repoSlug}/issues/${number}/labels`];
+  for (const label of labels) args.push('-f', `labels[]=${label}`);
+  await gh(args);
+}
+
+/** One GraphQL request. Variables go in as `-F`/`-f` fields; gh types numbers and booleans from `-F`. */
+async function ghGraphql<T>(query: string, variables: Record<string, string | number | boolean>): Promise<T> {
+  const args = ['api', 'graphql', '-f', `query=${query}`];
+  for (const [k, v] of Object.entries(variables)) args.push(typeof v === 'string' ? '-f' : '-F', `${k}=${v}`);
+  const res = await ghJson<{ data: T; errors?: Array<{ message: string }> }>(args);
+  if (res.errors?.length) throw new Error(`GraphQL: ${res.errors.map((e) => e.message).join('; ')}`);
+  return res.data;
+}
+
+export interface IssueRelations {
+  nodeId: string;
+  state: 'OPEN' | 'CLOSED';
+  /** Issues this one blocks. */
+  blocking: Array<{ nodeId: string; number: number }>;
+}
+
+/** Dependencies only exist in GraphQL: the node id (what the mutations take) and what the issue blocks. */
+export async function getIssueRelations(repoSlug: string, number: number): Promise<IssueRelations> {
+  const [owner, name] = repoSlug.split('/');
+  const data = await ghGraphql<{
+    repository: { issue: { id: string; state: 'OPEN' | 'CLOSED'; blocking: { nodes: Array<{ id: string; number: number }> } } };
+  }>(
+    'query($o:String!,$r:String!,$n:Int!){ repository(owner:$o,name:$r){ issue(number:$n){ id state blocking(first:50){ nodes { id number } } } } }',
+    { o: owner, r: name, n: number },
+  );
+  const issue = data.repository.issue;
+  return { nodeId: issue.id, state: issue.state, blocking: issue.blocking.nodes.map((b) => ({ nodeId: b.id, number: b.number })) };
+}
+
+/**
+ * Turn "dependent is blocked by blocker" into "dependent relates to blocker", in one request so the
+ * relationship is never missing from the sidebar between the two steps.
+ */
+export async function swapBlockedByForRelatesTo(dependentNodeId: string, blockerNodeId: string): Promise<void> {
+  await ghGraphql(
+    'mutation($dep:ID!,$blocker:ID!){ removeBlockedBy(input:{issueId:$dep, blockingIssueId:$blocker}){ clientMutationId } addRelatesTo(input:{issueId:$dep, relatedIssueId:$blocker}){ clientMutationId } }',
+    { dep: dependentNodeId, blocker: blockerNodeId },
+  );
+}
+
 /**
  * Make sure a label exists before an issue asks for it: GitHub creates unknown labels on an issue
  * with a random colour, and a repo's label list is the owner's, so the sweep's labels are declared

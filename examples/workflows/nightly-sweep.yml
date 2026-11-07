@@ -10,6 +10,10 @@
 #   4. rewrites the pinned "Code reviewer status" issue, which is your morning check.
 # It never pushes a fix and never sets a commit status, so nothing blocks a merge.
 #
+# The `landed` job runs when a PR merges: every ticket the PR body names with `Addresses #N` is
+# labelled `needs-judging` for that night's judge, and the tickets it blocked are unblocked (the
+# "blocked by" edge becomes "relates to"), so dependent work can start the same day.
+#
 # The `review-now` job is the escape hatch: put the `review-now` label on a PR to get the full
 # per-PR review (questions, fixes, gate) on demand. Delete that job if you never want it.
 name: Code Reviewer sweep
@@ -19,7 +23,7 @@ on:
     - cron: '17 7 * * *' # 07:17 UTC — adjust to a quiet hour in your time zone
   workflow_dispatch:
   pull_request:
-    types: [labeled]
+    types: [labeled, closed]
 
 permissions: {}
 
@@ -43,6 +47,20 @@ jobs:
           app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
           # repo-env: |
           #   TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/myapp_test
+
+  landed:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: josephmitchel/code-reviewer@main
+        with:
+          command: landed
+          pr: ${{ github.event.pull_request.number }}
+          database-url: ${{ secrets.DATABASE_URL }}
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          app-client-id: ${{ secrets.REVIEWER_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
 
   review-now:
     if: >-

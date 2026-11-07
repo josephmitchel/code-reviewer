@@ -17,7 +17,9 @@ inputs:
     description: >-
       `run` (the default) reviews a PR. `sweep` runs the nightly sweep: judges the reviewer
       issues the owner closed, audits what landed on the default branch since the last sweep, and
-      files concerns as issues — it never fixes and never gates, and ignores `pr`. `carry-gate`
+      files concerns as issues — it never fixes and never gates, and ignores `pr`. `landed` runs
+      when a PR merges: it labels every ticket the PR body addresses `needs-judging` and lifts
+      the tickets' blocking edges, and needs `pr`. `carry-gate`
       only moves a passed review's gate onto the PR's new head when that head holds
       already-reviewed code, for a job triggered by a push. It never starts or advances a
       review, and needs `pr`.
@@ -75,7 +77,7 @@ inputs:
 
 outputs:
   outcome:
-    description: passed | awaiting_answers | queued | skipped | swept
+    description: passed | awaiting_answers | queued | skipped | swept | landed
     value: ${{ steps.review.outputs.outcome }}
 
 runs:
@@ -157,6 +159,11 @@ runs:
             OUTCOME="$(grep -oE '^outcome: [a-z_]+' review.log | tail -1 | cut -d' ' -f2 || true)"
             echo "outcome=${OUTCOME:-unknown}" >> "$GITHUB_OUTPUT"
             echo "### Code Reviewer sweep: $REPO — ${OUTCOME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0 ;;
+          landed)
+            if [ -z "$PR" ]; then echo 'landed needs a pr' >&2; exit 2; fi
+            node bin/code-reviewer.mjs landed "$REPO" "$PR"
+            echo 'outcome=landed' >> "$GITHUB_OUTPUT"
             exit 0 ;;
           carry-gate)
             # Before the `pr` output on purpose: there is no review stage here for the cleanup
