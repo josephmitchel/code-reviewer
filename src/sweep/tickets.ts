@@ -98,6 +98,8 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
 
     const rest = without(ticket.labels, LABELS.needsJudging, LABELS.needsWork);
     if (res.output.verdict === 'solved') {
+      // A solved ticket's open question is moot; the answer, if given, was banked earlier tonight.
+      const closedLabels = without(rest, LABELS.needsAnswer);
       if (own) {
         await db
           .update(schema.concerns)
@@ -110,7 +112,7 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
           .where(eq(schema.concerns.id, own.id));
       }
       await postComment(slug, ticket.number, `✅ **Judged solved** at ${round.headSha.slice(0, 10)}.\n\n${res.output.evidence.trim()}`);
-      await updateIssue(slug, ticket.number, { state: 'closed', stateReason: 'completed', labels: rest });
+      await updateIssue(slug, ticket.number, { state: 'closed', stateReason: 'completed', labels: closedLabels });
     } else {
       const linked = inside
         .filter((c) => c.issueNumber !== null && c.level !== 'minor')

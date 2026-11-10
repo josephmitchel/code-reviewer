@@ -60,7 +60,14 @@ export async function runLanded(repoSlug: string, prNumber: number): Promise<voi
       reopened = true;
       console.log(`  #${n} was closed by PR #${prNumber}'s keyword — reopened for the judge`);
     }
-    if (!issue.labels.includes(LABELS.needsJudging)) await addIssueLabels(repoSlug, n, [LABELS.needsJudging]);
+    // A `needs-work` ticket whose follow-up lands goes back to the judge: the send-back is over.
+    if (issue.labels.includes(LABELS.needsWork)) {
+      await updateIssue(repoSlug, n, {
+        labels: [...issue.labels.filter((l) => l !== LABELS.needsWork && l !== LABELS.needsJudging), LABELS.needsJudging],
+      });
+    } else if (!issue.labels.includes(LABELS.needsJudging)) {
+      await addIssueLabels(repoSlug, n, [LABELS.needsJudging]);
+    }
 
     const lifted: number[] = [];
     try {
