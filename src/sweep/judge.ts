@@ -1,128 +1,202 @@
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
-import type { JudgedIssue } from '../db/schema.js';
-import { loadPrompt, runAgent, withConcurrency } from '../agents/run-agent.js';
-import { judgeOutputSchema } from '../agents/schemas.js';
+import type { JudgedIssue, JudgedTicket } from '../db/schema.js';
 import {
-  getCommit,
   getIssue,
-  getPrFacts,
+  getIssueRelations,
   listIssueComments,
   listIssueTimeline,
+  listOpenIssuesByLabel,
   postComment,
+  swapBlockedByForRelatesTo,
   updateIssue,
   type IssueComment,
   type IssueInfo,
-  type MergedPrFacts,
 } from '../github.js';
 import { ANSWER_AUTHORITY } from '../stages/answers.js';
-import { AGENT_CONCURRENCY, requireRound, requireWorkspace, type ConcernRow, type SweepCtx } from '../stages/context.js';
-import { parseDigestDismissals } from './render.js';
+import { requireRound, type ConcernRow, type SweepCtx } from '../stages/context.js';
+import { LABELS, parseDigestDismissals } from './render.js';
 
 /**
- * The owner closing a concern's issue is a claim that it is fixed; this stage checks the claim.
+ * The owner's decisions on tickets, applied before the audit so tonight's auditors already know them.
  *
- * Closed as completed → a judge agent reads the code at the sweep head and either resolves the
- * concern (a ✅ comment) or reopens the issue with its evidence. Closed as "not planned" → a
- * dismissal: the owner's comment becomes a repo policy so the auditors never raise it again, and
- * the concern is resolved without a judge. A ticked box in the digest dismisses a minor the same way.
+ * - `wontfix` on an open ticket — the reviewer's own concern or anyone's — is a dismissal. The sweep
+ *   closes it as not planned, drops `needs-judging` / `needs-work` / `needs-answer`, lifts its
+ *   blocking edges (telling each dependent its blocker was dismissed), and, if the owner wrote a
+ *   comment with the label, saves that comment as a repo policy so the point is never raised again.
+ *   With no comment the ticket is simply closed and nothing is recorded.
+ * - A concern whose issue the owner closed by hand is final: it is neither judged nor turned into
+ *   policy. The concern is marked resolved so it stops being an open prior.
+ * - A ticked box in the digest dismisses a minor, as policy.
  *
- * Nothing here needs a "judged" marker: an open concern whose issue is closed has, by definition,
- * not been judged yet — judging either resolves the concern or reopens the issue.
+ * Verifying fixes is not done here any more: a concern is fixed through a PR that says
+ * `Addresses #N`, which puts it in front of the ticket judge like any other ticket.
  */
-export async function judgeClosedIssues(ctx: SweepCtx): Promise<JudgedIssue[]> {
-  const round = requireRound(ctx);
-  const workspace = requireWorkspace(ctx);
-  const headSha = round.headSha;
+export async function settleOwnerDecisions(ctx: SweepCtx): Promise<{ judged: JudgedIssue[]; tickets: JudgedTicket[] }> {
+  const slug = ctx.repo.slug;
+  const judged: JudgedIssue[] = [];
+  const tickets: JudgedTicket[] = [];
 
-  const candidates = await db
+  const concerns = await db
     .select()
     .from(schema.concerns)
     .where(
-      and(
-        eq(schema.concerns.repoId, ctx.repo.id),
-        eq(schema.concerns.status, 'open'),
-        isNotNull(schema.concerns.issueNumber),
-      ),
+      and(eq(schema.concerns.repoId, ctx.repo.id), eq(schema.concerns.status, 'open'), isNotNull(schema.concerns.issueNumber)),
     );
+  const concernByIssue = new Map(concerns.map((c) => [c.issueNumber!, c]));
 
-  const judged: JudgedIssue[] = [];
-  const jobs = candidates.map((concern) => async () => {
+  let dismissed: IssueInfo[] = [];
+  try {
+    dismissed = await listOpenIssuesByLabel(slug, LABELS.dismissed);
+  } catch (err) {
+    console.warn(`could not list ${LABELS.dismissed} tickets (${String(err).split('\n')[0]})`);
+  }
+  const handled = new Set<number>();
+  for (const issue of dismissed) {
+    handled.add(issue.number);
+    const concern = concernByIssue.get(issue.number) ?? null;
+    const reason = await dismissTicket(ctx, issue, concern);
+    if (concern) judged.push({ slug: concern.slug, issueNumber: issue.number, verdict: 'dismissed', note: reason ?? '' });
+    else tickets.push({ issueNumber: issue.number, title: issue.title, verdict: 'dismissed', prNumbers: [] });
+  }
+
+  for (const concern of concerns) {
     const issueNumber = concern.issueNumber!;
+    if (handled.has(issueNumber)) continue;
     let issue: IssueInfo;
     try {
-      issue = await getIssue(ctx.repo.slug, issueNumber);
+      issue = await getIssue(slug, issueNumber);
     } catch (err) {
       console.warn(`could not read issue #${issueNumber} for ${concern.slug} (${String(err).split('\n')[0]}) — skipped`);
-      return;
+      continue;
     }
-    if (issue.state !== 'closed') return;
-
-    const comments = (await listIssueComments(ctx.repo.slug, issueNumber)).filter((c) =>
-      ANSWER_AUTHORITY.has(c.authorAssociation),
-    );
-
-    if (issue.stateReason === 'not_planned') {
-      const reason = comments.at(-1)?.body.trim() || '(no reason given)';
-      await dismissConcern(ctx, concern, `the owner closed issue #${issueNumber} as not planned`, reason);
-      await postComment(
-        ctx.repo.slug,
-        issueNumber,
-        'Noted. This is saved as a repo policy, so the reviewer will not raise it again.',
-      );
-      judged.push({ slug: concern.slug, issueNumber, verdict: 'dismissed', note: reason });
-      console.log(`  [dismiss:${concern.slug}] #${issueNumber}`);
-      return;
+    if (issue.state !== 'closed') continue;
+    if (issue.labels.includes(LABELS.dismissed)) {
+      // Labelled and closed in one go: the label is still the dismissal, and may carry a reason.
+      const reason = await dismissTicket(ctx, issue, concern);
+      judged.push({ slug: concern.slug, issueNumber, verdict: 'dismissed', note: reason ?? '' });
+      continue;
     }
+    await db
+      .update(schema.concerns)
+      .set({
+        status: 'resolved',
+        resolvedAt: new Date(),
+        resolutionNote: `Closed by hand (issue #${issueNumber}); final, not judged.`,
+        lastSeenRoundId: requireRound(ctx).id,
+      })
+      .where(eq(schema.concerns.id, concern.id));
+    judged.push({ slug: concern.slug, issueNumber, verdict: 'closed', note: 'closed by hand' });
+    console.log(`  [closed:${concern.slug}] #${issueNumber} closed by hand — final`);
+  }
 
-    const raisedSha = await raisedAtSha(concern, ctx.sweep.baseSha);
-    const claim = await gatherClaim(ctx.repo.slug, issueNumber, comments);
-    const res = await runAgent({
-      roundId: round.id,
-      role: `judge:${concern.slug}`,
-      cwd: workspace,
-      outputSchema: judgeOutputSchema,
-      prompt: loadPrompt('sweep/judge.md', {
-        HEAD_SHA: headSha,
-        RAISED_SHA: raisedSha,
-        ISSUE_NUMBER: String(issueNumber),
-        CONCERN: renderConcern(concern),
-        CLAIM: claim,
-      }),
-    });
+  judged.push(...(await dismissTickedMinors(ctx)));
+  return { judged, tickets };
+}
 
-    if (res.output.verdict === 'resolved') {
+/**
+ * Apply one `wontfix`: record the reason (if any) as policy, resolve the concern (if it is one), lift
+ * the blocking edges, strip the sweep's state labels and close the issue as not planned. Returns the
+ * reason that was recorded, or null when the owner gave none.
+ */
+async function dismissTicket(ctx: SweepCtx, issue: IssueInfo, concern: ConcernRow | null): Promise<string | null> {
+  const slug = ctx.repo.slug;
+  const n = issue.number;
+
+  let labeledAt: string | null = null;
+  try {
+    labeledAt = wontfixLabeledAt(await listIssueTimeline(slug, n));
+  } catch (err) {
+    console.warn(`could not read the timeline of #${n} (${String(err).split('\n')[0]})`);
+  }
+  let comments: IssueComment[] = [];
+  try {
+    comments = await listIssueComments(slug, n);
+  } catch (err) {
+    console.warn(`could not read the comments on #${n} (${String(err).split('\n')[0]})`);
+  }
+  const reason = dismissalReason(comments, labeledAt);
+
+  if (concern) {
+    if (reason) {
+      await dismissConcern(ctx, concern, `the owner labelled issue #${n} \`${LABELS.dismissed}\``, reason);
+    } else {
       await db
         .update(schema.concerns)
         .set({
           status: 'resolved',
           resolvedAt: new Date(),
-          resolutionNote: `Judged resolved at ${headSha.slice(0, 10)}: ${res.output.evidence}`,
-          lastSeenRoundId: round.id,
+          resolutionNote: `Dismissed: the owner labelled issue #${n} \`${LABELS.dismissed}\` without a reason.`,
+          lastSeenRoundId: requireRound(ctx).id,
         })
         .where(eq(schema.concerns.id, concern.id));
+    }
+  } else if (reason) {
+    await db.insert(schema.policies).values({
+      repoId: ctx.repo.id,
+      question: `Should "${issue.title.trim()}" (#${n}) be done?`,
+      answer: `No — the owner dismissed it with \`${LABELS.dismissed}\`: ${reason}`,
+    });
+  }
+
+  const lifted: number[] = [];
+  try {
+    const rel = await getIssueRelations(slug, n);
+    for (const dep of rel.blocking) {
+      await swapBlockedByForRelatesTo(dep.nodeId, rel.nodeId);
+      lifted.push(dep.number);
       await postComment(
-        ctx.repo.slug,
-        issueNumber,
-        `✅ **Verified fixed** at ${headSha.slice(0, 10)}.\n\n${res.output.evidence.trim()}`,
-      );
-    } else {
-      await updateIssue(ctx.repo.slug, issueNumber, { state: 'open' });
-      await postComment(
-        ctx.repo.slug,
-        issueNumber,
-        `↩️ **Reopened.** A judge checked ${headSha.slice(0, 10)} and the problem is still there.\n\n` +
-          `${res.output.evidence.trim()}\n\n` +
-          'Close it again once it is fixed, or close it as *not planned* with a comment to dismiss it.',
+        slug,
+        dep.number,
+        `#${n}, which blocked this ticket, was dismissed (\`${LABELS.dismissed}\`). It now relates to this ticket instead. ` +
+          'Decide whether this ticket still makes sense without it.',
       );
     }
-    judged.push({ slug: concern.slug, issueNumber, verdict: res.output.verdict, note: res.output.evidence });
-    console.log(`  [judge:${concern.slug}] ${res.output.verdict}`);
-  });
-  await withConcurrency(jobs, AGENT_CONCURRENCY);
+  } catch (err) {
+    console.warn(`  could not lift #${n}'s blocking edges (${String(err).split('\n')[0]})`);
+  }
 
-  judged.push(...(await dismissTickedMinors(ctx)));
-  return judged;
+  const lines = [
+    `Dismissed with \`${LABELS.dismissed}\`` +
+      (reason
+        ? '. Your comment is saved as a repo policy, so the reviewer will not raise this again.'
+        : '. No comment was given, so nothing was saved as policy.'),
+  ];
+  if (lifted.length > 0) lines.push(`Unblocked #${lifted.join(', #')} — they now relate to this ticket instead of waiting on it.`);
+  await postComment(slug, n, lines.join('\n\n'));
+
+  const labels = issue.labels.filter((l) => l !== LABELS.needsJudging && l !== LABELS.needsWork && l !== LABELS.needsAnswer);
+  const patch: Parameters<typeof updateIssue>[2] = {};
+  if (labels.length !== issue.labels.length) patch.labels = labels;
+  if (issue.state === 'open') {
+    patch.state = 'closed';
+    patch.stateReason = 'not_planned';
+  }
+  if (Object.keys(patch).length > 0) await updateIssue(slug, n, patch);
+  console.log(`  [dismiss] #${n}${concern ? ` (${concern.slug})` : ''}${reason ? ' with a reason' : ''}`);
+  return reason;
+}
+
+/** Pure: when the owner last put `wontfix` on the issue, or null if the timeline does not say. */
+export function wontfixLabeledAt(timeline: Array<{ event: string; label: string | null; createdAt: string | null }>): string | null {
+  let at: string | null = null;
+  for (const e of timeline) if (e.event === 'labeled' && e.label === LABELS.dismissed && e.createdAt) at = e.createdAt;
+  return at;
+}
+
+/** A comment written with the label can land a few minutes either side of it. */
+const DISMISSAL_COMMENT_SLACK_MS = 15 * 60 * 1000;
+
+/**
+ * Pure: the owner's reason for a dismissal — the last comment by someone GitHub vouches for, written
+ * with the label (not an older comment that answered something else). With no label time known, the
+ * last such comment counts.
+ */
+export function dismissalReason(comments: IssueComment[], labeledAt: string | null): string | null {
+  const since = labeledAt ? Date.parse(labeledAt) - DISMISSAL_COMMENT_SLACK_MS : Number.NEGATIVE_INFINITY;
+  const own = comments.filter((c) => ANSWER_AUTHORITY.has(c.authorAssociation) && Date.parse(c.createdAt) >= since);
+  const text = own.at(-1)?.body.trim();
+  return text ? text : null;
 }
 
 /** Minor concerns whose box the owner ticked in the digest. */
@@ -153,7 +227,7 @@ async function dismissTickedMinors(ctx: SweepCtx): Promise<JudgedIssue[]> {
   return out;
 }
 
-/** A dismissal is an owner decision: it becomes policy, exactly as an answered question does. */
+/** A dismissal with a reason is an owner decision: it becomes policy, exactly as an answered question does. */
 async function dismissConcern(ctx: SweepCtx, concern: ConcernRow, how: string, reason: string): Promise<void> {
   const round = requireRound(ctx);
   await db.transaction(async (tx) => {
@@ -172,92 +246,4 @@ async function dismissConcern(ctx: SweepCtx, concern: ConcernRow, how: string, r
       })
       .where(eq(schema.concerns.id, concern.id));
   });
-}
-
-/** The head of the round that last saw the concern — where it was last confirmed present. */
-async function raisedAtSha(concern: ConcernRow, fallback: string): Promise<string> {
-  if (!concern.lastSeenRoundId) return fallback;
-  const [round] = await db
-    .select({ headSha: schema.rounds.headSha })
-    .from(schema.rounds)
-    .where(eq(schema.rounds.id, concern.lastSeenRoundId));
-  return round?.headSha ?? fallback;
-}
-
-function renderConcern(c: ConcernRow): string {
-  return (
-    `### ${c.slug} (${c.level})\n${c.title}\nLocations: ${c.locations
-      .map((l) => `${l.file}${l.line ? `:${l.line}` : ''}`)
-      .join(', ')}\n\n${c.body}`
-  );
-}
-
-/**
- * What the owner says fixed it, assembled from the issue's history: the commit that closed it,
- * merged PRs that referenced it (a `fixes #N` shows up as a cross-reference), commits that
- * mentioned it, and anything the owner wrote in the thread. Failures here are not fatal — a judge
- * with no claim still has the code.
- */
-async function gatherClaim(repoSlug: string, issueNumber: number, comments: IssueComment[]): Promise<string> {
-  const commits: Array<{ sha: string; message: string }> = [];
-  const prs: MergedPrFacts[] = [];
-  try {
-    const timeline = await listIssueTimeline(repoSlug, issueNumber);
-    const commitShas = new Set<string>();
-    const prNumbers = new Set<number>();
-    for (const e of timeline) {
-      if ((e.event === 'closed' || e.event === 'referenced') && e.commitSha) commitShas.add(e.commitSha);
-      if (e.event === 'cross-referenced' && e.source?.isPullRequest) prNumbers.add(e.source.number);
-    }
-    for (const n of prNumbers) {
-      try {
-        const pr = await getPrFacts(repoSlug, n);
-        if (pr.merged) prs.push(pr);
-      } catch (err) {
-        console.warn(`could not read PR #${n} (${String(err).split('\n')[0]})`);
-      }
-    }
-    for (const sha of commitShas) {
-      try {
-        commits.push({ sha, message: (await getCommit(repoSlug, sha)).message });
-      } catch (err) {
-        console.warn(`could not read commit ${sha.slice(0, 10)} (${String(err).split('\n')[0]})`);
-      }
-    }
-  } catch (err) {
-    console.warn(`could not read the timeline of #${issueNumber} (${String(err).split('\n')[0]})`);
-  }
-  return buildClaim({ commits, prs, comments });
-}
-
-export interface ClaimInput {
-  commits: Array<{ sha: string; message: string }>;
-  prs: MergedPrFacts[];
-  /** Only comments from people GitHub vouches for — the owner, members, collaborators. */
-  comments: IssueComment[];
-}
-
-/** Pure: the claim text the judge reads. */
-export function buildClaim(input: ClaimInput): string {
-  const parts: string[] = [];
-  for (const pr of input.prs) {
-    parts.push(
-      `**Merged PR #${pr.number}: ${pr.title.trim()}**` +
-        (pr.mergeCommitSha ? ` (merge commit ${pr.mergeCommitSha.slice(0, 10)})` : '') +
-        (pr.body.trim() ? `\n\n${pr.body.trim()}` : ''),
-    );
-  }
-  for (const c of input.commits) {
-    parts.push(`**Commit ${c.sha.slice(0, 10)}**\n\n${c.message.trim()}`);
-  }
-  if (input.comments.length > 0) {
-    parts.push(
-      '**The owner wrote on the issue:**\n\n' +
-        input.comments.map((c) => c.body.trim().split('\n').map((l) => `> ${l}`).join('\n')).join('\n>\n'),
-    );
-  }
-  if (parts.length === 0) {
-    return '(The issue was closed without a linked commit, PR or comment. Judge from the code alone.)';
-  }
-  return parts.join('\n\n');
 }

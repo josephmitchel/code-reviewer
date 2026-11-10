@@ -439,6 +439,8 @@ export interface IssueTimelineEvent {
   commitSha: string | null;
   /** For `cross-referenced`: the issue or PR that referenced this one. */
   source: { number: number; isPullRequest: boolean } | null;
+  /** For `labeled` / `unlabeled`: the label's name. */
+  label: string | null;
 }
 
 export async function listIssueTimeline(repoSlug: string, number: number): Promise<IssueTimelineEvent[]> {
@@ -448,6 +450,7 @@ export async function listIssueTimeline(repoSlug: string, number: number): Promi
       created_at?: string;
       commit_id?: string | null;
       source?: { issue?: { number: number; pull_request?: unknown } } | null;
+      label?: { name: string } | null;
     }>
   >(['api', `repos/${repoSlug}/issues/${number}/timeline`, '--paginate']);
   return events.map((e) => ({
@@ -457,6 +460,7 @@ export async function listIssueTimeline(repoSlug: string, number: number): Promi
     source: e.source?.issue
       ? { number: e.source.issue.number, isPullRequest: e.source.issue.pull_request != null }
       : null,
+    label: e.label?.name ?? null,
   }));
 }
 

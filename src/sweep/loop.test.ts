@@ -16,7 +16,7 @@ describe('inferRetryState', () => {
     expect(inferRetryState({ sweep: sweep(null), round: round(null) })).toBe('intake');
   });
 
-  it('re-judges (cheaply, from recorded sessions) when the round exists but was not synthesized', () => {
+  it('re-settles the owner decisions (cheap, idempotent) when the round exists but was not synthesized', () => {
     expect(inferRetryState({ sweep: sweep('abc'), round: round(null) })).toBe('judging');
   });
 

@@ -20,6 +20,7 @@ export async function collectIssueAnswers(ctx: SweepCtx): Promise<number> {
     .where(
       and(
         eq(schema.concerns.repoId, ctx.repo.id),
+        eq(schema.concerns.status, 'open'),
         isNotNull(schema.questions.sweepId),
         eq(schema.questions.userFacing, true),
         isNull(schema.questions.answeredAt),

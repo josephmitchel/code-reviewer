@@ -7,12 +7,15 @@ lifts the ticket's blocking edges the moment its PR lands so dependent tickets c
 
 ## Closing work through PRs
 
-Work does **not** close through its PR. The nightly code reviewer closes tickets, after a judge
-has checked the landed code against the ticket and the repo's standards.
+Every ticket closes by one rule. A **ticket** is any issue a PR can address; an issue the nightly
+code reviewer opened is a ticket labelled `code-reviewer`. Work does **not** close through its PR:
+the reviewer closes tickets, after a judge has checked the landed code against the ticket and the
+repo's standards.
 
-- The PR body carries one `Addresses #N` line per implementation ticket behind it (the spec and each
-  slice). Never `Closes #N` / `Fixes #N` / `Resolves #N`: GitHub would close the ticket on merge. (The
-  merge automation reopens a ticket closed that way and labels it anyway, but do not rely on it.)
+- The PR body carries one `Addresses #N` line per ticket behind it (the spec, each slice, each
+  reviewer concern it fixes). Never `Closes #N` / `Fixes #N` / `Resolves #N`: GitHub would close
+  the ticket on merge. (The merge automation reopens a ticket closed that way and labels it anyway,
+  but do not rely on it.)
 - Once the PR is **merged**, two things happen to every ticket it addresses, automatically (the
   `landed` job in `.github/workflows/nightly-sweep.yml` runs on the merge): the ticket is labelled
   `needs-judging`, and its blocking edges are lifted — each "blocked by" edge on the tickets it
@@ -33,11 +36,14 @@ has checked the landed code against the ticket and the repo's standards.
   ```
 - The judge runs overnight. It either closes the ticket as completed with a comment saying what it
   checked, or replaces the label with `needs-work` and a comment listing what is missing, file by
-  file, in order. A `needs-work` ticket is picked up like any other open ticket; when the follow-up
-  lands, label it `needs-judging` again. A `needs-work` verdict does not re-block the tickets that
-  were lifted: they build on what is on main either way.
-- Tickets with no code behind them — decisions, research, a spec parent whose slices are all
-  closed — are closed directly, as before. Closing a ticket by hand is final; the judge never
-  reopens it.
-- Issues the code reviewer itself opened (label `code-reviewer`) are the exception: close those
-  normally (`Fixes #N` is fine); closing is what asks for their judge.
+  file, in order. A `needs-work` ticket is picked up like any other open ticket; the follow-up PR
+  says `Addresses #N` again and the merge relabels it `needs-judging`. A `needs-work` verdict does
+  not re-block the tickets that were lifted: they build on what is on main either way.
+- **Dismissing** a ticket is the `wontfix` label, added by the owner with an optional comment. The
+  nightly sweep closes it as not planned, removes `needs-judging` / `needs-work` / `needs-answer`,
+  lifts its blocking edges (commenting on each dependent that its blocker was dismissed) and saves
+  the comment as a repo policy, so the reviewer never raises the point again. No comment, no policy.
+  Agents never add `wontfix` on their own.
+- **Closing by hand** is final for every ticket and is never judged. It stays the way to close a
+  ticket with no code behind it — a decision, research, a spec parent whose slices are all closed.
+  Closing a reviewer concern by hand neither asks for its judge nor dismisses it.

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import type { JudgedTicket } from '../db/schema.js';
 import { loadPrompt, MODELS, runAgent, withConcurrency } from '../agents/run-agent.js';
@@ -23,7 +23,8 @@ import { LABELS } from './render.js';
  * Tickets anyone opened — a coding agent working a spec, the owner, the reviewer itself does not
  * matter — whose work has landed and that carry `needs-judging` instead of having been closed.
  * A judge reads the ticket as the spec and the merged PR as the delivery, and either closes the
- * ticket or hands it back as `needs-work` with a brief for whoever picks it up next.
+ * ticket or hands it back as `needs-work` with a brief for whoever picks it up next. A concern the
+ * reviewer raised is judged the same way; `solved` also resolves it in the database.
  *
  * Runs after synthesis so the judge can see the concerns tonight's audit raised inside the
  * ticket's own files. Closing a ticket by hand never comes here: the label is the only way in.
@@ -42,29 +43,19 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
   }
   if (tickets.length === 0) return [];
 
-  // The reviewer's own issues are judged by being closed; a label on one is a mistake, not a claim.
-  const ownIssues = new Set(
-    (
-      await db
-        .select({ n: schema.concerns.issueNumber })
-        .from(schema.concerns)
-        .where(and(eq(schema.concerns.repoId, ctx.repo.id), isNotNull(schema.concerns.issueNumber)))
-    ).map((r) => r.n),
-  );
-
   const tonight = await db
     .select()
     .from(schema.concerns)
     .where(and(eq(schema.concerns.repoId, ctx.repo.id), eq(schema.concerns.status, 'open')));
+  // The reviewer's own concerns, by issue: judged like any ticket, and resolved in the database on `solved`.
+  const ownConcerns = new Map(tonight.filter((c) => c.issueNumber !== null).map((c) => [c.issueNumber!, c]));
   const standards = renderRepoStandards(workspace);
   const policies = await renderPolicies(ctx.repo.id);
 
   const out: JudgedTicket[] = [];
   const jobs = tickets.map((ticket) => async () => {
-    if (ownIssues.has(ticket.number)) {
-      console.log(`  [ticket #${ticket.number}] is a reviewer concern — close it to have it judged; skipped`);
-      return;
-    }
+    if (ticket.labels.includes(LABELS.dismissed)) return; // a dismissal, settled earlier tonight
+    const own = ownConcerns.get(ticket.number) ?? null;
     const landed = await gatherLanded(slug, ticket.number, workspace, round.headSha);
     if (landed.kind === 'pending') {
       console.log(`  [ticket #${ticket.number}] PR #${landed.prNumbers.join(', #')} not on ${ctx.sweep.branch} yet — waiting`);
@@ -76,7 +67,7 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
         slug,
         ticket.number,
         `Nothing to judge: no merged pull request or commit references this ticket. ` +
-          `Label it \`${LABELS.needsJudging}\` again once its PR has landed, mentioning the ticket number in the PR body. ` +
+          `Merge a PR whose body says \`Addresses #${ticket.number}\` and it is labelled \`${LABELS.needsJudging}\` again by itself. ` +
           'If it needs no code, close it directly.',
       );
       out.push({ issueNumber: ticket.number, title: ticket.title, verdict: 'nothing_to_judge', prNumbers: [] });
@@ -85,7 +76,7 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
     }
 
     const touched = new Set(landed.files);
-    const inside = tonight.filter((c) => c.locations.some((l) => touched.has(l.file)));
+    const inside = tonight.filter((c) => c !== own && c.locations.some((l) => touched.has(l.file)));
     const res = await runAgent({
       roundId: round.id,
       role: `ticket-judge:${ticket.number}`,
@@ -107,6 +98,17 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
 
     const rest = without(ticket.labels, LABELS.needsJudging, LABELS.needsWork);
     if (res.output.verdict === 'solved') {
+      if (own) {
+        await db
+          .update(schema.concerns)
+          .set({
+            status: 'resolved',
+            resolvedAt: new Date(),
+            resolutionNote: `Judged solved at ${round.headSha.slice(0, 10)}: ${res.output.evidence}`,
+            lastSeenRoundId: round.id,
+          })
+          .where(eq(schema.concerns.id, own.id));
+      }
       await postComment(slug, ticket.number, `✅ **Judged solved** at ${round.headSha.slice(0, 10)}.\n\n${res.output.evidence.trim()}`);
       await updateIssue(slug, ticket.number, { state: 'closed', stateReason: 'completed', labels: rest });
     } else {
@@ -120,7 +122,7 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
         `🔁 **Needs work.** A judge checked ${round.headSha.slice(0, 10)} against this ticket.\n\n` +
           `${res.output.evidence.trim()}\n\n` +
           (linked.length > 0 ? `Tonight's audit also raised these inside this work:\n${linked.join('\n')}\n\n` : '') +
-          `When the follow-up lands, label this \`${LABELS.needsJudging}\` again.`,
+          `Fix it in a follow-up PR that says \`Addresses #${ticket.number}\`; on merge this is labelled \`${LABELS.needsJudging}\` again.`,
       );
     }
     out.push({ issueNumber: ticket.number, title: ticket.title, verdict: res.output.verdict, prNumbers: landed.prNumbers });

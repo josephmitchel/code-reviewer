@@ -13,6 +13,7 @@ describe('ticket timeline', () => {
     createdAt: null,
     commitSha: null,
     source: null,
+    label: null,
     ...extra,
   });
 

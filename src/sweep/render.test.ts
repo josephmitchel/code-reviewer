@@ -58,9 +58,12 @@ describe('renderIssueBody', () => {
     expect(body).toMatch(/2\. Is the 2% cap published\?\n\s+\*\*Answer:\*\* Yes, 2% per the card terms\./);
   });
 
-  it('tells the owner how closing, dismissing and the slug work', () => {
+  it('tells the owner how fixing, dismissing and the slug work', () => {
     const body = renderIssueBody(concern);
-    expect(body).toContain('not planned');
+    expect(body).toContain('Addresses #<this issue>');
+    expect(body).toContain('`wontfix`');
+    expect(body).toContain('Closing this issue by hand is final');
+    expect(body).not.toContain('fixes #');
     expect(body).toContain('`unbounded-sync-retry-loop`');
     expect(body).toContain('<!-- code-reviewer:concern unbounded-sync-retry-loop -->');
   });
@@ -137,6 +140,7 @@ describe('renderStatusBody', () => {
         { slug: 'a', issueNumber: 10, verdict: 'resolved' as const, note: '' },
         { slug: 'b', issueNumber: 11, verdict: 'unresolved' as const, note: '' },
         { slug: 'c', issueNumber: 13, verdict: 'dismissed' as const, note: '' },
+        { slug: 'd', issueNumber: 15, verdict: 'closed' as const, note: '' },
       ],
     },
   };
@@ -151,6 +155,9 @@ describe('renderStatusBody', () => {
     expect(body).toContain('**Reopened**');
     expect(body).toContain('#11 `b`');
     expect(body).toContain('**Dismissed**');
+    expect(body).toContain('#13 `c`');
+    expect(body).toContain('**Closed by hand**');
+    expect(body).toContain('#15 `d`');
     expect(body).toContain('#9 `old-nit`');
     expect(body).toContain('**Answers recorded:** 2');
     expect(body).toContain('| minor | 4 (#7) |');
@@ -166,15 +173,20 @@ describe('renderStatusBody', () => {
           { issueNumber: 20, title: 'Add CSV export', verdict: 'solved', prNumbers: [41] },
           { issueNumber: 21, title: 'Retry on 5xx', verdict: 'needs_work', prNumbers: [42] },
           { issueNumber: 22, title: 'Decide on cache TTL', verdict: 'nothing_to_judge', prNumbers: [] },
+          { issueNumber: 23, title: 'Dark mode', verdict: 'dismissed', prNumbers: [] },
         ],
       },
     });
+    expect(body).toContain('**Tickets dismissed**');
+    expect(body).toContain('  - #23 Dark mode');
     expect(body).toContain('**Tickets judged solved**');
     expect(body).toContain('  - #20 Add CSV export');
     expect(body).toContain('**Tickets sent back** as `needs-work`');
     expect(body).toContain('  - #21 Retry on 5xx');
     expect(body).toContain('**Tickets with nothing to judge**');
     expect(body).toContain('  - #22 Decide on cache TTL');
+    expect(body).toContain('Every ticket closes by one rule');
+    expect(body).toContain('`Addresses #N`');
   });
 
   it('says plainly when nothing landed', () => {

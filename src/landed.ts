@@ -1,5 +1,3 @@
-import { and, eq, isNotNull } from 'drizzle-orm';
-import { db, schema } from './db/client.js';
 import {
   addIssueLabels,
   ensureLabel,
@@ -22,8 +20,8 @@ import { LABEL_DEFINITIONS, LABELS } from './sweep/render.js';
  *
  * `Addresses #N` is the convention. A PR that said `Closes #N` instead had its ticket closed by
  * GitHub on merge, which would hide it from the judge for good, so such a ticket is reopened and
- * labelled like the others; the process holds even when a PR slips. Issues the reviewer itself
- * filed are left alone: closing is their path to a judge.
+ * labelled like the others; the process holds even when a PR slips. A concern the reviewer filed
+ * is a ticket like any other: this is how its fix reaches a judge.
  */
 export async function runLanded(repoSlug: string, prNumber: number): Promise<void> {
   const pr = await getPrFacts(repoSlug, prNumber);
@@ -39,26 +37,11 @@ export async function runLanded(repoSlug: string, prNumber: number): Promise<voi
   }
   console.log(`PR #${prNumber} merged, naming ticket(s) #${tickets.join(', #')}`);
 
-  const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, repoSlug));
-  const ownIssues = new Set(
-    repo
-      ? (
-          await db
-            .select({ n: schema.concerns.issueNumber })
-            .from(schema.concerns)
-            .where(and(eq(schema.concerns.repoId, repo.id), isNotNull(schema.concerns.issueNumber)))
-        ).map((r) => r.n)
-      : [],
-  );
   for (const label of LABEL_DEFINITIONS) {
     if (label.name === LABELS.needsJudging || label.name === LABELS.needsWork) await ensureLabel(repoSlug, label);
   }
 
   for (const n of tickets) {
-    if (ownIssues.has(n)) {
-      console.log(`  #${n} is a code-reviewer issue — closing it is what asks for its judge; left alone`);
-      continue;
-    }
     let issue;
     try {
       issue = await getIssue(repoSlug, n);

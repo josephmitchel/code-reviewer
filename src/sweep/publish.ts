@@ -97,8 +97,8 @@ export async function publishIssues(
         console.log(`  opened #${issue.number} for ${concern.slug} (${concern.level})`);
       } else {
         const issue = await readIssue(slug, concern.issueNumber);
-        // A closed issue on an open concern is one the owner closed after tonight's judging ran;
-        // the next sweep judges it. Never force it open from here.
+        // A closed issue on an open concern is one the owner closed by hand after tonight's
+        // settling ran; the next sweep marks it final. Never force it open from here.
         if (!issue || issue.state !== 'open') continue;
         const labels = issueLabels(concern, pending, issue.labels);
         const patch: Parameters<typeof updateIssue>[2] = {};

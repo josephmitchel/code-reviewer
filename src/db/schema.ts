@@ -103,18 +103,26 @@ export const repos = pgTable('repos', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * A reviewer concern the owner decided on: dismissed with `wontfix` (saved as policy when a reason
+ * was given), closed by hand (final, never judged), or — from the nights before concerns were judged
+ * as tickets — verified or reopened by a judge.
+ */
 export interface JudgedIssue {
   slug: string;
   issueNumber: number;
-  verdict: 'resolved' | 'unresolved' | 'dismissed';
+  verdict: 'resolved' | 'unresolved' | 'dismissed' | 'closed';
   note: string;
 }
 
-/** A ticket (any issue, whoever opened it) that carried `needs-judging` and got a verdict. */
+/**
+ * A ticket (any issue a PR can address, the reviewer's own concerns included) that carried
+ * `needs-judging` and got a verdict, or that the owner dismissed with `wontfix`.
+ */
 export interface JudgedTicket {
   issueNumber: number;
   title: string;
-  verdict: 'solved' | 'needs_work' | 'nothing_to_judge';
+  verdict: 'solved' | 'needs_work' | 'nothing_to_judge' | 'dismissed';
   /** The merged PRs the verdict was based on. */
   prNumbers: number[];
 }

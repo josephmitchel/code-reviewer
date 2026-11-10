@@ -13,6 +13,11 @@ export const LABELS = {
   needsJudging: 'needs-judging',
   /** The judge's send-back: the PR landed but did not finish the ticket, see the comment. */
   needsWork: 'needs-work',
+  /**
+   * The owner's dismissal, on any ticket: GitHub's own label, which the triage skills already use.
+   * The sweep closes the ticket as not planned and saves the comment that came with it as policy.
+   */
+  dismissed: 'wontfix',
   level: (level: string) => `level: ${level}`,
   quality: (characteristic: string) => `quality: ${characteristic}`,
 } as const;
@@ -23,6 +28,7 @@ export const LABEL_DEFINITIONS: Array<{ name: string; color: string; description
   { name: LABELS.needsAnswer, color: 'fbca04', description: 'The code reviewer has a question only the owner can answer' },
   { name: LABELS.needsJudging, color: '1d76db', description: 'Its PR has landed; the nightly judge decides whether the ticket is solved' },
   { name: LABELS.needsWork, color: 'e99695', description: 'The judge found the ticket not finished — see its last comment' },
+  { name: LABELS.dismissed, color: 'ffffff', description: 'This will not be worked on' },
   { name: LABELS.level('major'), color: 'b60205', description: 'A defect, security hole or data-loss risk worth fixing soon' },
   { name: LABELS.level('moderate'), color: 'd93f0b', description: 'A real problem worth an issue of its own' },
   ...AUDITOR_CHARACTERISTICS.map((c) => ({
@@ -152,10 +158,11 @@ export function renderIssueBody(input: IssueConcernInput): string {
   );
   lines.push('');
   lines.push(
-    'Close this issue when it is fixed (`fixes #<this issue>` in the PR does it on merge). The next ' +
-      'nightly sweep verifies the fix and reopens the issue with evidence if the problem is still ' +
-      'there. To dismiss it instead, close it as **not planned** with a comment saying why: the ' +
-      'reason becomes a repo policy and the reviewer will not raise it again.',
+    `**To fix it**, open a PR whose body says \`Addresses #<this issue>\`. When that PR merges, this issue is ` +
+      `labelled \`${LABELS.needsJudging}\` and the next nightly sweep's judge closes it — or labels it ` +
+      `\`${LABELS.needsWork}\` with what is still wrong. **To dismiss it**, add the \`${LABELS.dismissed}\` label; ` +
+      'a comment saying why becomes a repo policy, so the reviewer will not raise it again, and the next sweep ' +
+      'closes it as not planned. Closing this issue by hand is final: it is neither judged nor saved as policy.',
   );
   lines.push('');
   lines.push(`${FOOTER_START}${input.slug} -->`);
@@ -256,6 +263,8 @@ function ticketLines(tickets: JudgedTicket[]): string[] {
   if (work.length > 0) lines.push(`- **Tickets sent back** as \`${LABELS.needsWork}\``, ...work);
   const none = by('nothing_to_judge');
   if (none.length > 0) lines.push('- **Tickets with nothing to judge** (no merged PR behind them)', ...none);
+  const dismissed = by('dismissed');
+  if (dismissed.length > 0) lines.push(`- **Tickets dismissed** (\`${LABELS.dismissed}\`, closed as not planned)`, ...dismissed);
   return lines;
 }
 
@@ -303,7 +312,9 @@ export function renderStatusBody(input: StatusInput): string {
     const unresolved = judgedLines(s.judged, 'unresolved');
     if (unresolved.length > 0) items.push('- **Reopened** (you closed these, a judge found the problem still there)', ...unresolved);
     const dismissed = judgedLines(s.judged, 'dismissed');
-    if (dismissed.length > 0) items.push('- **Dismissed** and saved as policy', ...dismissed);
+    if (dismissed.length > 0) items.push(`- **Dismissed** (\`${LABELS.dismissed}\`; a reason given with it is now policy)`, ...dismissed);
+    const closed = judgedLines(s.judged, 'closed');
+    if (closed.length > 0) items.push('- **Closed by hand** (final, not judged)', ...closed);
     if (s.closedByAudit.length > 0) {
       items.push('- **Closed by the auditors** (fixed in passing by what landed)');
       for (const c of s.closedByAudit) items.push(`  - ${issueRef(c.issueNumber)} \`${c.slug}\``);
@@ -344,14 +355,23 @@ export function renderStatusBody(input: StatusInput): string {
       'minor ones go in the digest. Nothing is fixed for you and nothing blocks a merge.',
   );
   lines.push('');
-  lines.push('- **Fix** an issue and close it (`fixes #N` in the PR). The next sweep verifies it, and reopens it with evidence if the problem is still there.');
-  lines.push('- **Dismiss** an issue by closing it as *not planned* with a comment. The reason becomes repo policy.');
-  lines.push(`- **Answer** an issue labelled \`${LABELS.needsAnswer}\` in its thread. The answer becomes repo policy.`);
   lines.push(
-    `- **Any ticket**, whoever opened it: when its PR lands, label it \`${LABELS.needsJudging}\` instead of closing it. ` +
-      `The judge closes it if the PR did what the ticket asked to the repo's standards, or labels it \`${LABELS.needsWork}\` with what is missing. ` +
-      'Closing a ticket by hand is final and is never judged.',
+    `Every ticket closes by one rule, the reviewer's own issues included. A ticket is any issue a PR can address; ` +
+      `one the reviewer opened carries \`${LABELS.reviewer}\`.`,
   );
+  lines.push('');
+  lines.push(
+    `- **Fix or deliver** it through a PR whose body says \`Addresses #N\` (never \`Fixes\`, \`Closes\` or \`Resolves\`). ` +
+      `On merge the ticket is labelled \`${LABELS.needsJudging}\` and the tickets it blocked are unblocked. The nightly judge then ` +
+      `closes it as completed, or labels it \`${LABELS.needsWork}\` with what is missing, file by file.`,
+  );
+  lines.push(
+    `- **Dismiss** it by adding the \`${LABELS.dismissed}\` label, with a comment if you want the reason kept. The next sweep closes it ` +
+      'as not planned, lifts its blocking edges and saves the comment as repo policy; without a comment nothing is recorded.',
+  );
+  lines.push(`- **Answer** an issue labelled \`${LABELS.needsAnswer}\` in its thread. The answer becomes repo policy.`);
+  lines.push('- **Close by hand** only a ticket with no code behind it (a decision, research, a spec whose slices are done). That is final and never judged.');
+  lines.push(`- **Minor findings** live in the digest; tick a box there to dismiss one.`);
   lines.push('');
   lines.push('<!-- code-reviewer:status -->');
   return lines.join('\n');

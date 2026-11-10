@@ -1,13 +1,15 @@
 # Copy this into the repository you want swept, as .github/workflows/nightly-sweep.yml.
 #
 # The nightly sweep replaces per-PR review with an advisory backlog. Every night it:
-#   1. judges every reviewer issue you closed since the last sweep — a judge agent reads the code
-#      and either confirms the fix or reopens the issue with evidence; an issue closed as
-#      "not planned" is a dismissal and becomes a repo policy instead;
+#   1. applies your decisions: a ticket labelled `wontfix` is closed as not planned, its blocking
+#      edges lifted, and the comment you gave with the label saved as a repo policy; a reviewer
+#      issue you closed by hand is final and never judged;
 #   2. reads your replies on issues labelled `needs-answer` and saves them as policy;
 #   3. audits what landed on the default branch since the last sweep (ISO/IEC 25010, ten auditors)
 #      and files each major or moderate concern as an issue, minors into one digest issue;
-#   4. rewrites the pinned "Code reviewer status" issue, which is your morning check.
+#   4. judges every ticket labelled `needs-judging` — the reviewer's own issues included — against
+#      its text and the repo's standards: closed as completed, or `needs-work` with a brief;
+#   5. rewrites the pinned "Code reviewer status" issue, which is your morning check.
 # It never pushes a fix and never sets a commit status, so nothing blocks a merge.
 #
 # The `landed` job runs when a PR merges: every ticket the PR body names with `Addresses #N` is

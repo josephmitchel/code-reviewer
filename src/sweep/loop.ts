@@ -7,7 +7,7 @@ import { changedFilePaths, prepareWorkspace, runRepoCommand } from '../workspace
 import { auditRound } from '../stages/audit.js';
 import { synthesizeRound } from '../stages/synthesis.js';
 import { requireRound, type RepoRow, type SweepCtx, type SweepRow } from '../stages/context.js';
-import { judgeClosedIssues } from './judge.js';
+import { settleOwnerDecisions } from './judge.js';
 import { collectIssueAnswers } from './answers.js';
 import { publishIssues, publishStatus } from './publish.js';
 import { judgeTickets } from './tickets.js';
@@ -20,11 +20,12 @@ type Partial = Pick<SweepSummary, 'judged' | 'answered' | 'commits' | 'tickets'>
  *
  *   intake → judging → answering → auditing → synthesizing → judging_tickets → publishing → done
  *
- * Judge the reviewer's own issues first, so a concern the owner fixed is resolved before the
- * audit lists it as a prior. Audit the default branch's diff since the previous sweep; an empty
- * diff skips the audit but still judges, collects answers and republishes. Tickets labelled
- * `needs-judging` are judged after synthesis, so that judge sees what the audit found in them. Nothing is fixed and nothing is gated: the
- * output is GitHub issues. State lives in Postgres, so a killed run resumes where it stopped.
+ * Apply the owner's decisions first (`wontfix` dismissals, hand-closed concerns, ticked minors), so
+ * a dismissed point is policy before the audit runs. Audit the default branch's diff since the
+ * previous sweep; an empty diff skips the audit but still settles, collects answers and republishes.
+ * Every ticket labelled `needs-judging` — the reviewer's own concerns included — is judged after
+ * synthesis, so that judge sees what the audit found in it. Nothing is fixed and nothing is gated:
+ * the output is GitHub issues. State lives in Postgres, so a killed run resumes where it stopped.
  */
 export async function runSweep(repoSlug: string): Promise<'swept' | 'failed'> {
   const [repo] = await db.select().from(schema.repos).where(eq(schema.repos.slug, repoSlug));
@@ -63,10 +64,10 @@ export async function runSweep(repoSlug: string): Promise<'swept' | 'failed'> {
           await setState(ctx, 'judging');
           break;
         case 'judging': {
-          const judged = await judgeClosedIssues(ctx);
-          partial = { ...partial, judged };
+          const { judged, tickets } = await settleOwnerDecisions(ctx);
+          partial = { ...partial, judged, tickets };
           await savePartial(ctx, partial);
-          console.log(`judged ${judged.length} closed issue(s)`);
+          console.log(`settled ${judged.length} concern(s) and ${tickets.length} ticket(s) the owner decided on`);
           await setState(ctx, 'answering');
           break;
         }
@@ -100,7 +101,7 @@ export async function runSweep(repoSlug: string): Promise<'swept' | 'failed'> {
           break;
         }
         case 'judging_tickets': {
-          const tickets = await judgeTickets(ctx);
+          const tickets = [...(partial.tickets ?? []).filter((t) => t.verdict === 'dismissed'), ...(await judgeTickets(ctx))];
           partial = { ...partial, tickets };
           await savePartial(ctx, partial);
           console.log(`judged ${tickets.length} ticket(s)`);
@@ -257,10 +258,10 @@ async function prepareSweepWorkspace(ctx: SweepCtx): Promise<void> {
 }
 
 /**
- * Where a failed sweep picks up. Every stage is safe to repeat — judges and auditors reuse their
- * recorded sessions, answers skip comments already banked, a judged ticket no longer carries the
- * label, publishing changes only what differs — so this only has to avoid redoing the expensive
- * audit once it has been synthesized.
+ * Where a failed sweep picks up. Every stage is safe to repeat — a dismissed ticket is closed and
+ * no longer listed, auditors reuse their recorded sessions, answers skip comments already banked,
+ * a judged ticket no longer carries the label, publishing changes only what differs — so this only
+ * has to avoid redoing the expensive audit once it has been synthesized.
  */
 export function inferRetryState(ctx: Pick<SweepCtx, 'round' | 'sweep'>): State {
   if (!ctx.round || !ctx.sweep.headSha) return 'intake';

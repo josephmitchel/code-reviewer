@@ -1,33 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { buildClaim } from './judge.js';
+import { dismissalReason, wontfixLabeledAt } from './judge.js';
 
 /**
- * The judge reads "what the owner says fixed it" assembled from the issue's history. The
- * assembly has to survive every shape GitHub produces — closed by a commit, by a merged PR,
- * by hand with a comment, or by hand with nothing at all — without inventing a claim.
+ * A `wontfix` label is the owner's dismissal; a comment written with it is the reason that becomes
+ * policy. The reason has to be the comment that came with the label — not an answer the owner gave
+ * weeks earlier, and never something a passer-by wrote.
  */
-describe('buildClaim', () => {
-  const comment = (body: string) => ({ id: 1, body, createdAt: '2026-11-06T10:00:00Z', authorLogin: 'joe', authorAssociation: 'OWNER' });
+describe('dismissalReason', () => {
+  const c = (body: string, createdAt: string, authorAssociation = 'OWNER') => ({ id: 1, body, createdAt, authorLogin: 'joe', authorAssociation });
 
-  it('says so when the issue was closed with nothing attached', () => {
-    expect(buildClaim({ commits: [], prs: [], comments: [] })).toMatch(/closed without a linked commit, PR or comment/);
+  it('takes the owner comment written with the label, including one a few minutes before it', () => {
+    const comments = [
+      c('1. Yes, after the third retry.', '2026-11-01T10:00:00Z'),
+      c('Not worth it, the cap is enforced upstream.', '2026-11-09T19:55:00Z'),
+    ];
+    expect(dismissalReason(comments, '2026-11-09T20:00:00Z')).toBe('Not worth it, the cap is enforced upstream.');
   });
 
-  it('leads with the merged PR, then commits, then what the owner wrote', () => {
-    const text = buildClaim({
-      prs: [{ number: 40, title: 'Cap sync retries', body: 'Fixes #12 by capping at 5.', merged: true, mergeCommitSha: 'deadbeefcafe1234' }],
-      commits: [{ sha: 'abcdef1234567890', message: 'cap retries\n\nfixes #12' }],
-      comments: [comment('Done in #40.\nAlso tidied the test.')],
-    });
-    expect(text.indexOf('Merged PR #40')).toBeLessThan(text.indexOf('Commit abcdef1234'));
-    expect(text.indexOf('Commit abcdef1234')).toBeLessThan(text.indexOf('The owner wrote'));
-    expect(text).toContain('(merge commit deadbeefca)');
-    expect(text).toContain('Fixes #12 by capping at 5.');
-    expect(text).toContain('> Done in #40.\n> Also tidied the test.');
+  it('is null when the only comments predate the label, or when nobody with authority wrote one', () => {
+    expect(dismissalReason([c('1. Yes.', '2026-11-01T10:00:00Z')], '2026-11-09T20:00:00Z')).toBeNull();
+    expect(dismissalReason([c('please drop this', '2026-11-09T20:01:00Z', 'NONE')], '2026-11-09T20:00:00Z')).toBeNull();
+    expect(dismissalReason([], null)).toBeNull();
   });
 
-  it('quotes a comment-only closure as the claim', () => {
-    const text = buildClaim({ prs: [], commits: [], comments: [comment('Handled in the refactor last week.')] });
-    expect(text).toBe('**The owner wrote on the issue:**\n\n> Handled in the refactor last week.');
+  it('falls back to the last owner comment when the label time is unknown', () => {
+    expect(dismissalReason([c('old', '2026-11-01T10:00:00Z'), c('new', '2026-11-02T10:00:00Z')], null)).toBe('new');
+  });
+});
+
+describe('wontfixLabeledAt', () => {
+  it('reads the latest wontfix labeling and ignores other labels', () => {
+    expect(
+      wontfixLabeledAt([
+        { event: 'labeled', label: 'wontfix', createdAt: '2026-11-01T00:00:00Z' },
+        { event: 'unlabeled', label: 'wontfix', createdAt: '2026-11-02T00:00:00Z' },
+        { event: 'labeled', label: 'needs-work', createdAt: '2026-11-03T00:00:00Z' },
+        { event: 'labeled', label: 'wontfix', createdAt: '2026-11-04T00:00:00Z' },
+      ]),
+    ).toBe('2026-11-04T00:00:00Z');
+    expect(wontfixLabeledAt([{ event: 'labeled', label: 'bug', createdAt: '2026-11-01T00:00:00Z' }])).toBeNull();
   });
 });
