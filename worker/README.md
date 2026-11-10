@@ -11,7 +11,10 @@ to the workflow's dispatch endpoint. Nothing expires. The App's installation alr
 
 ## One-time setup (the owner's accounts; nothing here is delegated)
 
-1. Create a free Cloudflare account at https://dash.cloudflare.com/sign-up.
+1. Create a free Cloudflare account at https://dash.cloudflare.com/sign-up, then open
+   **Workers & Pages** in the dashboard once. That first visit creates the account's
+   `workers.dev` subdomain; without it a deploy that attaches cron schedules fails with
+   error code 10063.
 2. From the code-reviewer checkout, log in and deploy. Wrangler is pinned, not installed:
    ```
    npx --yes wrangler@4.153.0 login
@@ -26,11 +29,19 @@ to the workflow's dispatch endpoint. Nothing expires. The App's installation alr
    The client id is on the App's settings page (`Iv1.…` / `Iv23…`). The private key is the `.pem`
    downloaded from the same page; paste it whole, `BEGIN RSA PRIVATE KEY` to `END`, no
    conversion needed. On macOS `pbcopy < path/to/key.pem` then paste at the prompt.
-4. Prove it without waiting for the night: the dashboard's Worker page has a **Trigger** button
-   under Settings → Triggers → Cron Triggers, or run
-   `npx --yes wrangler@4.153.0 dev --config worker/wrangler.toml --test-scheduled` and open
-   `http://localhost:8787/__scheduled?cron=17+7+*+*+*`. Either way a run appears within a
-   minute at `gh run list -R <owner/repo> --workflow nightly-sweep.yml`, event `workflow_dispatch`.
+4. Check it. A deployed cron cannot be fired by hand from the dashboard; the first scheduled
+   run is the test. The next morning, the Worker's page in the dashboard shows the invocation
+   under **Cron Events** / **Logs**, and
+   `gh run list -R <owner/repo> --workflow nightly-sweep.yml` shows a run with event
+   `workflow_dispatch` at the scheduled minute.
+
+   To exercise the code before then, run it locally with the secrets in a `worker/.dev.vars`
+   file (`KEY=value` lines; the file is git-ignored):
+   ```
+   npx --yes wrangler@4.153.0 dev --config worker/wrangler.toml --test-scheduled
+   curl "http://localhost:8787/cdn-cgi/local/scheduled?cron=17+7+*+*+*"
+   ```
+   That dispatches a real run on the repo. Delete `.dev.vars` afterwards.
 
 ## Add a repo
 

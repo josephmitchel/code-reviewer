@@ -3,3 +3,8 @@ workspaces/
 .env
 *.tsbuildinfo
 .DS_Store
+
+# Credentials: the App's private key (download it to ~/Keys, never here) and wrangler's local secrets
+*.pem
+.dev.vars
+worker/.dev.vars
