@@ -93,7 +93,9 @@ settle owner decisions → read answers → audit base...head → synthesis → 
   is waiting on you.
 
 Run it with `node bin/code-reviewer.mjs sweep owner/name`, or on Actions with
-`examples/workflows/nightly-sweep.yml` (`command: sweep`). That workflow also carries a
+`examples/workflows/nightly-sweep.yml` (`command: sweep`). GitHub's `schedule` trigger is
+best-effort (hours late in practice), so the schedule lives in a Cloudflare Worker that dispatches
+each repo's workflow on the minute as the reviewer's App: `worker/README.md`. That workflow also carries a
 `review-now` job: label a PR `review-now` to get the full PR review on demand. The two modes share
 the database, the concerns and the policies, so an answer given on a PR binds the sweep and vice
 versa; running both on the same repo at the same moment is not supported.
@@ -118,5 +120,6 @@ intake → audit (scout + 10 auditors) → synthesis ──┬─ clean → gate
 - `src/review-loop.ts` — PR state machine driver; `src/stages/*` — one module per stage (audit and synthesis are shared)
 - `src/sweep/*` — the nightly sweep: `loop.ts` driver, `judge.ts` (owner decisions: `wontfix`, hand closes, ticked minors), `tickets.ts` (`needs-judging` tickets, concerns included), `answers.ts`, `publish.ts`, `render.ts` (issue/digest/status text)
 - `src/agents/run-agent.ts` — Agent SDK wrapper (structured output, session recording, resume)
+- `worker/` — the Cloudflare Worker that starts each repo's sweep on time, as the App (`worker/README.md`)
 - `prompts/` — auditor definitions (ISO 25010 verbatim) and pipeline role prompts; `prompts/sweep/` — the sweep's framing of scout, auditor, synthesis and the ticket judge
 - `src/db/schema.ts` — repos, reviews, sweeps, rounds, concerns, findings, questions, policies, agent_sessions, github_artifacts

@@ -1,0 +1,17 @@
+# The nightly sweep's alarm clock. GitHub's own `schedule` trigger is best-effort and has run the
+# sweep 7–10 hours late; Cloudflare cron fires on the minute. Each cron below must have a repo
+# in src/repos.ts that names it (a test checks), and each repo's cron must be listed here.
+#
+# Deploy:  npx --yes wrangler@4.153.0 deploy --config worker/wrangler.toml
+# Secrets: see worker/README.md — GITHUB_APP_CLIENT_ID and GITHUB_APP_PRIVATE_KEY.
+name = "code-reviewer-sweep-trigger"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = false
+
+[triggers]
+# UTC. One repo per slot, an hour apart, so two sweeps never share the Claude subscription.
+crons = ["17 7 * * *", "17 8 * * *"]
+
+[observability]
+enabled = true

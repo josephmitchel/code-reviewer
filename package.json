@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "worker:deploy": "npx --yes wrangler@4.153.0 deploy --config worker/wrangler.toml",
+    "worker:tail": "npx --yes wrangler@4.153.0 tail --config worker/wrangler.toml"
   },
   "keywords": [],
   "author": "",

@@ -21,8 +21,9 @@
 name: Code Reviewer sweep
 
 on:
-  schedule:
-    - cron: '17 7 * * *' # 07:17 UTC — adjust to a quiet hour in your time zone
+  # The schedule lives in the Cloudflare Worker (worker/README.md), which dispatches this workflow
+  # on the minute; GitHub's own `schedule` runs hours late. Add a `schedule:` block only as a
+  # backstop while rolling the Worker out.
   workflow_dispatch:
   pull_request:
     types: [labeled, closed]
