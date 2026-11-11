@@ -397,7 +397,7 @@ async function showStatus(slug?: string): Promise<void> {
           `${s.error ? ` — error: ${s.error.slice(0, 120)}` : ''}`,
       );
     }
-    if (repo.statusIssueNumber) console.log(`  status issue: #${repo.statusIssueNumber}, digest: #${repo.digestIssueNumber ?? '-'}`);
+    if (repo.digestIssueNumber) console.log(`  digest: #${repo.digestIssueNumber}`);
     const open = await db.select().from(schema.concerns).where(eq(schema.concerns.repoId, repo.id));
     const openCount = open.filter((c) => c.status === 'open').length;
     const withIssue = open.filter((c) => c.status === 'open' && c.issueNumber !== null).length;

@@ -9,7 +9,6 @@
 #      and files each major or moderate concern as an issue, minors into one digest issue;
 #   4. judges every ticket labelled `needs-judging` — the reviewer's own issues included — against
 #      its text and the repo's standards: closed as completed, or `needs-work` with a brief;
-#   5. rewrites the pinned "Code reviewer status" issue, which is your morning check.
 # It never pushes a fix and never sets a commit status, so nothing blocks a merge.
 #
 # The `landed` job runs when a PR merges: every ticket the PR body names with `Addresses #N` is

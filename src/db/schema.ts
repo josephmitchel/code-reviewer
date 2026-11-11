@@ -96,9 +96,11 @@ export const repos = pgTable('repos', {
   redundancy: integer('redundancy').notNull().default(1),
   harnessNotes: text('harness_notes'),
   extraContext: text('extra_context'),
-  // The two long-lived issues the sweep keeps per repo: a rolling list of minor findings, and the
-  // status page that is the owner's morning check. Created on the first sweep, edited ever after.
+  // The long-lived issue the sweep keeps per repo: a rolling list of minor findings. Created on the
+  // first sweep, edited ever after.
   digestIssueNumber: integer('digest_issue_number'),
+  // The status page the sweep kept until 2026-11-11, when the owner dropped it. No longer written or
+  // read; kept so dropping it needs no migration.
   statusIssueNumber: integer('status_issue_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -127,7 +129,7 @@ export interface JudgedTicket {
   prNumbers: number[];
 }
 
-/** What one sweep did, kept for the status issue and for `code-reviewer status`. */
+/** What one sweep did, kept for `code-reviewer status`. */
 export interface SweepSummary {
   judged: JudgedIssue[];
   /** Absent on sweeps recorded before ticket judging existed. */

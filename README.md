@@ -88,9 +88,10 @@ settle owner decisions → read answers → audit base...head → synthesis → 
   tonight's audit raised inside that PR's files in front of it. A `needs-work` verdict does not
   re-block the tickets the merge unblocked. `examples/issue-tracker-closing.md` is the section to
   put in a repo's `docs/agents/issue-tracker.md` so the Matt Pocock skills follow the rule.
-- **Morning check:** one pinned "Code reviewer status" issue per repo, rewritten every night:
-  what landed, what was opened, dismissed or closed by hand, which tickets were judged, and what
-  is waiting on you.
+- **What happened:** every action leaves a comment on the issue it touched, and the run's log
+  ends with the synthesis's account of the night. A sweep that stops fails its Actions run, so
+  GitHub's failed-run notification is the alert; the next run resumes where it stopped.
+  `code-reviewer status` lists the recent sweeps.
 
 Run it with `node bin/code-reviewer.mjs sweep owner/name`, or on Actions with
 `examples/workflows/nightly-sweep.yml` (`command: sweep`). GitHub's `schedule` trigger is

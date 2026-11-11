@@ -9,7 +9,7 @@ import { synthesizeRound } from '../stages/synthesis.js';
 import { requireRound, type RepoRow, type SweepCtx, type SweepRow } from '../stages/context.js';
 import { settleOwnerDecisions } from './judge.js';
 import { collectIssueAnswers } from './answers.js';
-import { publishIssues, publishStatus } from './publish.js';
+import { publishIssues } from './publish.js';
 import { judgeTickets } from './tickets.js';
 
 type State = (typeof schema.sweepState.enumValues)[number];
@@ -119,15 +119,15 @@ export async function runSweep(repoSlug: string): Promise<'swept' | 'failed'> {
             .where(eq(schema.sweeps.id, ctx.sweep.id));
           ctx.sweep = { ...ctx.sweep, state: 'done', error: null };
           markStage('done');
-          await publishStatus(ctx, ctx.round?.roundSummary ?? null);
+          if (ctx.round?.roundSummary) console.log(`\n${ctx.round.roundSummary.trim()}`);
           break;
         }
         default:
           throw new Error(`unhandled sweep state ${ctx.sweep.state}`);
       }
     } catch (err) {
+      // The job fails with it, so GitHub's failed-run notification is what tells the owner.
       await setState(ctx, 'failed', String(err));
-      await publishStatus(ctx, ctx.round?.roundSummary ?? null);
       throw err;
     }
   }

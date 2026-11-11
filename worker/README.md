@@ -72,6 +72,7 @@ GitHub status and body in the Worker's logs (dashboard → the Worker → Logs, 
 `npx --yes wrangler@4.153.0 tail --config worker/wrangler.toml`). A cron that no repo is
 scheduled on fails the same way, so a stale `wrangler.toml` is noticed, not ignored.
 
-The morning check does not depend on any of this: the pinned "Code reviewer status" issue's
-"Last sweep" line is the date the sweep actually ran. If it is yesterday's, something upstream
-did not fire.
+The check that the sweep actually ran does not depend on any of this:
+`gh run list -R <owner/repo> --workflow nightly-sweep.yml` shows each night's run, and the minor
+findings digest ends with the commit the last sweep saw. A sweep that started and then stopped
+fails its run, which GitHub notifies about like any failed workflow.

@@ -1,11 +1,10 @@
-import { and, eq, inArray, isNotNull, isNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { db, schema } from '../db/client.js';
 import type { SweepSummary } from '../db/schema.js';
 import {
   createIssue,
   ensureLabel,
   getIssue,
-  pinIssue,
   postComment,
   updateIssue,
   type IssueInfo,
@@ -15,12 +14,10 @@ import {
   DIGEST_TITLE,
   LABEL_DEFINITIONS,
   LABELS,
-  STATUS_TITLE,
   issueLabels,
   issueTitle,
   renderDigestBody,
   renderIssueBody,
-  renderStatusBody,
   type IssueGuidance,
   type IssueQuestion,
 } from './render.js';
@@ -54,7 +51,7 @@ export function wantsIssue(c: ConcernRow): boolean {
 /**
  * Bring GitHub in line with the database: open an issue for every new major or moderate concern,
  * refresh the body and labels of existing ones, close the ones the auditors found fixed, rewrite the
- * digest and the status page. Idempotent — a resumed sweep republishes and changes nothing it already
+ * digest. Idempotent — a resumed sweep republishes and changes nothing it already
  * published.
  */
 export async function publishIssues(
@@ -147,7 +144,7 @@ async function publishDigest(ctx: SweepCtx, concerns: ConcernRow[]): Promise<voi
     headSha: round.headSha,
     entries: minors.map((c) => ({ slug: c.slug, title: c.title, body: c.body, locations: c.locations })),
   });
-  const number = await ensureLongLivedIssue(ctx, 'digestIssueNumber', DIGEST_TITLE, body, false);
+  const number = await ensureLongLivedIssue(ctx, 'digestIssueNumber', DIGEST_TITLE, body);
   if (number === null) return;
   const issue = await readIssue(ctx.repo.slug, number);
   if (!issue) return;
@@ -157,62 +154,15 @@ async function publishDigest(ctx: SweepCtx, concerns: ConcernRow[]): Promise<voi
   if (Object.keys(patch).length > 0) await updateIssue(ctx.repo.slug, number, patch);
 }
 
-/** The status page is rewritten whatever happened, including when the sweep stopped. Best-effort. */
-export async function publishStatus(ctx: SweepCtx, roundSummary: string | null): Promise<void> {
-  try {
-    const concerns = await sweepConcerns(ctx);
-    const open = concerns.filter((c) => c.status === 'open');
-    const pendingIssueIds = new Set(
-      (
-        await db
-          .select({ concernId: schema.questions.concernId })
-          .from(schema.questions)
-          .where(and(isNotNull(schema.questions.sweepId), eq(schema.questions.userFacing, true), isNull(schema.questions.answeredAt)))
-      ).map((r) => r.concernId),
-    );
-    const body = renderStatusBody({
-      repoSlug: ctx.repo.slug,
-      branch: ctx.sweep.branch,
-      sweptAt: new Date(),
-      baseSha: ctx.sweep.baseSha,
-      headSha: ctx.sweep.headSha ?? ctx.sweep.baseSha,
-      state: ctx.sweep.state,
-      error: ctx.sweep.error,
-      summary: ctx.sweep.summary,
-      roundSummary,
-      openByLevel: {
-        major: open.filter((c) => c.level === 'major').length,
-        moderate: open.filter((c) => c.level === 'moderate').length,
-        minor: open.filter((c) => c.level === 'minor').length,
-      },
-      digestIssueNumber: ctx.repo.digestIssueNumber,
-      needsAnswer: open
-        .filter((c) => c.issueNumber !== null && pendingIssueIds.has(c.id))
-        .map((c) => ({ issueNumber: c.issueNumber!, title: c.title })),
-    });
-    const number = await ensureLongLivedIssue(ctx, 'statusIssueNumber', STATUS_TITLE, body, true);
-    if (number === null) return;
-    const issue = await readIssue(ctx.repo.slug, number);
-    if (!issue) return;
-    const patch: Parameters<typeof updateIssue>[2] = {};
-    if (issue.body.trim() !== body.trim()) patch.body = body;
-    if (issue.state === 'closed') patch.state = 'open';
-    if (Object.keys(patch).length > 0) await updateIssue(ctx.repo.slug, number, patch);
-  } catch (err) {
-    console.warn(`could not update the status issue (${String(err).split('\n')[0]})`);
-  }
-}
-
 /**
- * The digest and the status page exist once per repo. Created on first use and remembered on the
- * repo row; returns the number, or null when creation failed (the caller carries on without it).
+ * The digest exists once per repo. Created on first use and remembered on the repo row; returns the
+ * number, or null when creation failed (the caller carries on without it).
  */
 async function ensureLongLivedIssue(
   ctx: SweepCtx,
-  column: 'digestIssueNumber' | 'statusIssueNumber',
+  column: 'digestIssueNumber',
   title: string,
   body: string,
-  pin: boolean,
 ): Promise<number | null> {
   const existing = ctx.repo[column];
   if (existing !== null) return existing;
@@ -221,7 +171,6 @@ async function ensureLongLivedIssue(
     await db.update(schema.repos).set({ [column]: issue.number }).where(eq(schema.repos.id, ctx.repo.id));
     ctx.repo = { ...ctx.repo, [column]: issue.number };
     console.log(`  created "${title}" as #${issue.number}`);
-    if (pin) await pinIssue(issue.nodeId);
     return issue.number;
   } catch (err) {
     console.warn(`could not create "${title}" (${String(err).split('\n')[0]})`);

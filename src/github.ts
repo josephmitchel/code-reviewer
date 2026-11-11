@@ -489,27 +489,6 @@ export async function getPrFacts(repoSlug: string, number: number): Promise<Merg
   };
 }
 
-/**
- * Pin an issue to the top of the repo's issues page. GitHub allows three; a fourth is refused,
- * and so is pinning the same issue twice. Both are fine to ignore — the status page works unpinned.
- */
-export async function pinIssue(issueNodeId: string): Promise<boolean> {
-  try {
-    await gh([
-      'api',
-      'graphql',
-      '-f',
-      'query=mutation($id: ID!) { pinIssue(input: {issueId: $id}) { issue { id } } }',
-      '-f',
-      `id=${issueNodeId}`,
-    ]);
-    return true;
-  } catch (err) {
-    console.warn(`could not pin the issue (${String(err).split('\n')[0]})`);
-    return false;
-  }
-}
-
 /** `gh api --input -` with the request body on stdin, for the shapes form fields cannot express. */
 async function ghWithStdin(args: string[], input: string): Promise<string> {
   const env = appAuthConfigured() ? { ...process.env, GH_TOKEN: await installationToken() } : process.env;
