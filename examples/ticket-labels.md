@@ -42,6 +42,8 @@ Yellow waits on the owner, green and orange on an agent, blue on the nightly jud
   unless the merge job failed. See `issue-tracker.md`, "Closing work through PRs".
 - Only the owner adds `wontfix`.
 - A closed ticket has no status, except `wontfix`, which stays as the record of the dismissal.
+- The "Code reviewer: minor findings" digest is not a ticket: no PR addresses it. It carries
+  `concern` and no status.
 
 ## Level and quality: concerns only
 
