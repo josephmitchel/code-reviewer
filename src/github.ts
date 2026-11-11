@@ -388,7 +388,8 @@ export async function swapBlockedByForRelatesTo(dependentNodeId: string, blocker
 /**
  * Make sure a label exists before an issue asks for it: GitHub creates unknown labels on an issue
  * with a random colour, and a repo's label list is the owner's, so the sweep's labels are declared
- * once with a colour and a description instead. Existing labels are left exactly as they are.
+ * once with a colour and a description instead. An existing label is left as it is; `updateLabel`
+ * is what changes one.
  */
 export async function ensureLabel(
   repoSlug: string,
@@ -410,6 +411,35 @@ export async function ensureLabel(
   } catch (err) {
     if (!/422|already_exists/.test(String(err))) throw err;
   }
+}
+
+export interface RepoLabel {
+  name: string;
+  color: string;
+  description: string;
+}
+
+/** Every label defined on the repo. */
+export async function listLabels(repoSlug: string): Promise<RepoLabel[]> {
+  const rows = await ghJson<Array<{ name: string; color: string; description: string | null }>>([
+    'api',
+    `repos/${repoSlug}/labels?per_page=100`,
+    '--paginate',
+  ]);
+  return rows.map((r) => ({ name: r.name, color: r.color.toLowerCase(), description: r.description ?? '' }));
+}
+
+/** Rename, recolour or redescribe a label in place. Issues that carry it keep it under the new name. */
+export async function updateLabel(
+  repoSlug: string,
+  name: string,
+  patch: { newName?: string; color?: string; description?: string },
+): Promise<void> {
+  const args = ['api', '-X', 'PATCH', `repos/${repoSlug}/labels/${encodeURIComponent(name)}`];
+  if (patch.newName !== undefined) args.push('-f', `new_name=${patch.newName}`);
+  if (patch.color !== undefined) args.push('-f', `color=${patch.color}`);
+  if (patch.description !== undefined) args.push('-f', `description=${patch.description}`);
+  await gh(args);
 }
 
 /** All comments on an issue, oldest first, with who wrote them and what GitHub says they are to the repo. */

@@ -3,21 +3,21 @@ import { db, schema } from '../db/client.js';
 import type { SweepSummary } from '../db/schema.js';
 import {
   createIssue,
-  ensureLabel,
   getIssue,
   postComment,
   updateIssue,
   type IssueInfo,
 } from '../github.js';
 import { requireRound, type ConcernRow, type SweepCtx } from '../stages/context.js';
+import { syncLabels } from './labels.js';
 import {
   DIGEST_TITLE,
-  LABEL_DEFINITIONS,
   LABELS,
   issueLabels,
   issueTitle,
   renderDigestBody,
   renderIssueBody,
+  withStatus,
   type IssueGuidance,
   type IssueQuestion,
 } from './render.js';
@@ -60,7 +60,7 @@ export async function publishIssues(
 ): Promise<SweepSummary> {
   const round = requireRound(ctx);
   const slug = ctx.repo.slug;
-  for (const label of LABEL_DEFINITIONS) await ensureLabel(slug, label);
+  await syncLabels(slug);
 
   const concerns = await sweepConcerns(ctx);
   const opened: SweepSummary['opened'] = [];
@@ -122,7 +122,7 @@ export async function publishIssues(
       await updateIssue(slug, concern.issueNumber, {
         state: 'closed',
         stateReason: 'completed',
-        labels: issue.labels.filter((l) => l !== LABELS.needsAnswer),
+        labels: withStatus(issue.labels, null),
       });
       closedByAudit.push({ slug: concern.slug, issueNumber: concern.issueNumber });
       console.log(`  closed #${concern.issueNumber} for ${concern.slug} (fixed by the audit)`);
@@ -167,7 +167,7 @@ async function ensureLongLivedIssue(
   const existing = ctx.repo[column];
   if (existing !== null) return existing;
   try {
-    const issue = await createIssue(ctx.repo.slug, { title, body, labels: [LABELS.reviewer] });
+    const issue = await createIssue(ctx.repo.slug, { title, body, labels: [LABELS.concern] });
     await db.update(schema.repos).set({ [column]: issue.number }).where(eq(schema.repos.id, ctx.repo.id));
     ctx.repo = { ...ctx.repo, [column]: issue.number };
     console.log(`  created "${title}" as #${issue.number}`);

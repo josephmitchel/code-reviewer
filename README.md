@@ -62,23 +62,28 @@ once a night it audits what landed on the default branch and files what it finds
 issues. It never pushes a fix and never sets a commit status.
 
 ```
-settle owner decisions → read answers → audit base...head → synthesis → judge `needs-judging` tickets → issues / digest / status
+settle owner decisions → read answers → audit base...head → synthesis → judge `needs-judging` tickets → issues / digest
 ```
 
 - **Scope:** the default branch's diff since the previous sweep (the first sweep audits nothing
   and only sets up the issues). An empty diff still settles, judges, reads answers and republishes.
-- **Issues:** every major or moderate concern becomes an issue labelled `code-reviewer`,
-  `level: …` and `quality: …`, with locations linked at the commit the sweep saw. Minor
+- **Issues:** every major or moderate concern becomes an issue labelled `concern`, its
+  level (`major` / `moderate`) and its quality characteristic, with locations linked at the commit the sweep saw. Minor
   concerns go in one rolling "Code reviewer: minor findings" issue; tick a box there to dismiss one.
 - **One rule for every ticket:** a ticket is any issue a PR can address, and a concern the sweep
-  raised is a ticket labelled `code-reviewer`. The PR says `Addresses #N` (never `Fixes` / `Closes` /
-  `Resolves`); on merge the `landed` job labels the ticket `needs-judging` and lifts its blocking
+  raised is a ticket labelled `concern`. The PR says `Addresses #N` (never `Fixes` / `Closes` /
+  `Resolves`); on merge the `landed` job sets the ticket's status to `needs-judging` and lifts its blocking
   edges; the next sweep's judge closes it or labels it `needs-work` with a file-by-file brief. A
   concern is never closed-then-reopened: it stays open until a judge says it is solved.
 - **Dismissing:** add the `wontfix` label, with a comment if the reason should be kept. The next
-  sweep closes the ticket as not planned, drops `needs-judging` / `needs-work` / `needs-answer`,
+  sweep closes the ticket as not planned, drops every other status label,
   lifts its blocking edges (commenting on each dependent), and saves the comment as a repo policy
   so the auditors never raise the point again. No comment, no policy.
+- **Labels:** every ticket carries exactly one kind (`spec`, `bug`, `concern`) and, while open,
+  exactly one status; colour tells the groups apart, so names carry no prefix. The sweep and the
+  `landed` job rename a repo's old labels in place and set the colours (`code-reviewer labels
+  <owner/repo>` does it on demand). `examples/ticket-labels.md` is the scheme, written for a repo's
+  `docs/agents/`.
 - **Closing by hand** is final for every ticket and never judged — the way to close a ticket with no
   code behind it. For a concern it is neither a fix claim nor a dismissal.
 - **Questions:** a concern whose fix needs a product decision gets the question in its issue and

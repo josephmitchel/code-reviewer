@@ -17,7 +17,7 @@ import {
 import { renderPolicies, renderRepoStandards } from '../stages/audit.js';
 import { AGENT_CONCURRENCY, requireRound, requireWorkspace, type ConcernRow, type SweepCtx } from '../stages/context.js';
 import { changedFilePaths, isAncestor } from '../workspace.js';
-import { LABELS } from './render.js';
+import { LABELS, withStatus } from './render.js';
 
 /**
  * Tickets anyone opened — a coding agent working a spec, the owner, the reviewer itself does not
@@ -62,7 +62,11 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
       return;
     }
     if (landed.kind === 'nothing') {
-      await updateIssue(slug, ticket.number, { labels: without(ticket.labels, LABELS.needsJudging) });
+      // Nothing landed, so nobody knows whose move it is: a concern goes back to the agents, any
+      // other ticket to the owner.
+      await updateIssue(slug, ticket.number, {
+        labels: withStatus(ticket.labels, own ? LABELS.readyForAgent : LABELS.needsTriage),
+      });
       await postComment(
         slug,
         ticket.number,
@@ -96,10 +100,10 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
       }),
     });
 
-    const rest = without(ticket.labels, LABELS.needsJudging, LABELS.needsWork);
     if (res.output.verdict === 'solved') {
-      // A solved ticket's open question is moot; the answer, if given, was banked earlier tonight.
-      const closedLabels = without(rest, LABELS.needsAnswer);
+      // A closed ticket carries no status. An open question is moot; its answer, if given, was
+      // banked earlier tonight.
+      const closedLabels = withStatus(ticket.labels, null);
       if (own) {
         await db
           .update(schema.concerns)
@@ -117,7 +121,7 @@ export async function judgeTickets(ctx: SweepCtx): Promise<JudgedTicket[]> {
       const linked = inside
         .filter((c) => c.issueNumber !== null && c.level !== 'minor')
         .map((c) => `- #${c.issueNumber} (${c.level}) ${c.title}`);
-      await updateIssue(slug, ticket.number, { labels: [...rest, LABELS.needsWork] });
+      await updateIssue(slug, ticket.number, { labels: withStatus(ticket.labels, LABELS.needsWork) });
       await postComment(
         slug,
         ticket.number,
@@ -223,8 +227,4 @@ function renderAuditConcerns(concerns: ConcernRow[]): string {
         c.locations.map((l) => `${l.file}${l.line ? `:${l.line}` : ''}`).join(', '),
     )
     .join('\n');
-}
-
-function without(labels: string[], ...drop: string[]): string[] {
-  return labels.filter((l) => !drop.includes(l));
 }

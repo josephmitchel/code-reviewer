@@ -7,57 +7,132 @@ import { AUDITOR_CHARACTERISTICS } from '../stages/context.js';
  */
 
 export const LABELS = {
-  reviewer: 'code-reviewer',
+  // Kind: what the ticket is. Exactly one per ticket.
+  spec: 'spec',
+  bug: 'bug',
+  /** A concern the nightly sweep raised. The only kind the sweep itself applies. */
+  concern: 'concern',
+  // Status: who has to act next. Exactly one per open ticket.
+  needsTriage: 'needs-triage',
+  needsInfo: 'needs-info',
   needsAnswer: 'needs-answer',
-  /** Put on any ticket by whoever shipped its PR: "a judge should check this landed properly". */
-  needsJudging: 'needs-judging',
+  readyForHuman: 'ready-for-human',
+  readyForAgent: 'ready-for-agent',
   /** The judge's send-back: the PR landed but did not finish the ticket, see the comment. */
   needsWork: 'needs-work',
+  /** Put on any ticket when its PR merges: "a judge should check this landed properly". */
+  needsJudging: 'needs-judging',
   /**
    * The owner's dismissal, on any ticket: GitHub's own label, which the triage skills already use.
    * The sweep closes the ticket as not planned and saves the comment that came with it as policy.
    */
   dismissed: 'wontfix',
-  level: (level: string) => `level: ${level}`,
-  quality: (characteristic: string) => `quality: ${characteristic}`,
+  // Level and quality carry no prefix: the colour says which group a label belongs to.
+  level: (level: string) => level,
+  quality: (characteristic: string) => characteristic,
 } as const;
 
-/** Declared with colours and descriptions so they do not appear on the repo in random colours. */
+export const KIND_LABELS: readonly string[] = [LABELS.spec, LABELS.bug, LABELS.concern];
+
+export const STATUS_LABELS: readonly string[] = [
+  LABELS.needsTriage,
+  LABELS.needsInfo,
+  LABELS.needsAnswer,
+  LABELS.readyForHuman,
+  LABELS.readyForAgent,
+  LABELS.needsWork,
+  LABELS.needsJudging,
+  LABELS.dismissed,
+];
+
+const LEVEL_LABELS: readonly string[] = ['major', 'moderate'];
+
+/**
+ * One colour family per group, so a label's group is readable without a prefix: kinds are dark and
+ * saturated, statuses are bright and coloured by who acts next (yellow the owner, green an agent,
+ * blue the nightly judge), levels are neutral and darker when heavier, qualities one pale grey.
+ */
+const WAITING_ON_OWNER = 'f5d33d';
 export const LABEL_DEFINITIONS: Array<{ name: string; color: string; description: string }> = [
-  { name: LABELS.reviewer, color: '5319e7', description: 'Raised by the nightly code reviewer sweep' },
-  { name: LABELS.needsAnswer, color: 'fbca04', description: 'The code reviewer has a question only the owner can answer' },
-  { name: LABELS.needsJudging, color: '1d76db', description: 'Its PR has landed; the nightly judge decides whether the ticket is solved' },
-  { name: LABELS.needsWork, color: 'e99695', description: 'The judge found the ticket not finished — see its last comment' },
-  { name: LABELS.dismissed, color: 'ffffff', description: 'This will not be worked on' },
-  { name: LABELS.level('major'), color: 'b60205', description: 'A defect, security hole or data-loss risk worth fixing soon' },
-  { name: LABELS.level('moderate'), color: 'd93f0b', description: 'A real problem worth an issue of its own' },
+  { name: LABELS.spec, color: '0550ae', description: 'Kind: a specified piece of work to build' },
+  { name: LABELS.bug, color: 'b3261e', description: 'Kind: something is not working' },
+  { name: LABELS.concern, color: '6639ba', description: 'Kind: raised by the nightly code reviewer sweep' },
+  { name: LABELS.needsTriage, color: WAITING_ON_OWNER, description: 'Status: the owner has not yet decided what happens to this' },
+  { name: LABELS.needsInfo, color: WAITING_ON_OWNER, description: 'Status: waiting on whoever raised it for more detail' },
+  { name: LABELS.needsAnswer, color: WAITING_ON_OWNER, description: 'Status: the code reviewer has a question only the owner can answer' },
+  { name: LABELS.readyForHuman, color: WAITING_ON_OWNER, description: 'Status: needs a person to implement it' },
+  { name: LABELS.readyForAgent, color: '56d364', description: 'Status: fully specified, an agent can pick it up' },
+  { name: LABELS.needsWork, color: 'ffa657', description: 'Status: the judge found it not finished; see its last comment' },
+  { name: LABELS.needsJudging, color: '79c0ff', description: 'Status: its PR has landed; the nightly judge decides whether it is solved' },
+  { name: LABELS.dismissed, color: 'ffffff', description: 'Status: this will not be worked on' },
+  { name: LABELS.level('major'), color: '1f2328', description: 'Level: a defect, security hole or data-loss risk worth fixing soon' },
+  { name: LABELS.level('moderate'), color: '6e7781', description: 'Level: a real problem worth an issue of its own' },
   ...AUDITOR_CHARACTERISTICS.map((c) => ({
     name: LABELS.quality(c),
-    color: '0e8a16',
-    description: `ISO/IEC 25010 quality characteristic: ${c}`,
+    color: 'd8dee4',
+    description: `Quality: ISO/IEC 25010 ${c}`,
   })),
 ];
 
-/** Labels the sweep owns. Anything else on an issue is the owner's and is left alone. */
+/**
+ * Names the scheme replaced. A repo that still has the old label gets it renamed in place, which
+ * keeps it on every issue that carries it.
+ */
+export const RENAMED_LABELS: Array<{ from: string; to: string }> = [
+  { from: 'code-reviewer', to: LABELS.concern },
+  { from: 'enhancement', to: LABELS.spec },
+  ...LEVEL_LABELS.map((l) => ({ from: `level: ${l}`, to: LABELS.level(l) })),
+  ...AUDITOR_CHARACTERISTICS.map((c) => ({ from: `quality: ${c}`, to: LABELS.quality(c) })),
+];
+
+/**
+ * Labels the sweep sets on its own concerns: the kind, the level and the quality (and their retired
+ * spellings, so a rename that did not happen cannot leave both on an issue). Status is handled
+ * separately by `withStatus`. Anything else on an issue is the owner's and is left alone.
+ */
 export function isManagedLabel(name: string): boolean {
   return (
-    name === LABELS.reviewer ||
-    name === LABELS.needsAnswer ||
+    KIND_LABELS.includes(name) ||
+    LEVEL_LABELS.includes(name) ||
+    (AUDITOR_CHARACTERISTICS as readonly string[]).includes(name) ||
+    RENAMED_LABELS.some((r) => r.from === name) ||
     name.startsWith('level: ') ||
     name.startsWith('quality: ')
   );
 }
 
-/** The label set an issue should carry: the owner's labels, plus ours for the concern's current state. */
+/** The labels with every status taken off and, unless `status` is null, that one status put on. */
+export function withStatus(labels: string[], status: string | null): string[] {
+  const rest = labels.filter((l) => !STATUS_LABELS.includes(l));
+  return status === null ? rest : [...rest, status];
+}
+
+/**
+ * The one status an open concern carries. A dismissal, a pending judgement and a send-back are
+ * someone else's call and stand. Otherwise an unanswered question waits on the owner, and a concern
+ * with nothing in its way is ready for an agent unless the owner already routed it elsewhere.
+ */
+export function concernStatus(pendingQuestions: boolean, existing: string[]): string {
+  for (const held of [LABELS.dismissed, LABELS.needsJudging, LABELS.needsWork]) {
+    if (existing.includes(held)) return held;
+  }
+  if (pendingQuestions) return LABELS.needsAnswer;
+  for (const routed of [LABELS.readyForHuman, LABELS.needsInfo, LABELS.needsTriage]) {
+    if (existing.includes(routed)) return routed;
+  }
+  return LABELS.readyForAgent;
+}
+
+/** The label set a concern's issue should carry: the owner's labels, plus ours for its current state. */
 export function issueLabels(
   concern: { level: string; characteristics: string[] },
   pendingQuestions: boolean,
   existing: string[] = [],
 ): string[] {
-  const ours = [LABELS.reviewer, LABELS.level(concern.level)];
+  const ours = [LABELS.concern, LABELS.level(concern.level)];
   if (concern.characteristics[0]) ours.push(LABELS.quality(concern.characteristics[0]));
-  if (pendingQuestions) ours.push(LABELS.needsAnswer);
-  return [...existing.filter((l) => !isManagedLabel(l)), ...ours];
+  const kept = withStatus(existing, null).filter((l) => !isManagedLabel(l));
+  return [...kept, ...ours, concernStatus(pendingQuestions, existing)];
 }
 
 export function permalink(repoSlug: string, sha: string, location: ConcernLocation): string {

@@ -15,6 +15,7 @@ import { runMigrations } from './migrate.js';
 import { runReview } from './review-loop.js';
 import { runSweep } from './sweep/loop.js';
 import { runLanded } from './landed.js';
+import { syncLabels } from './sweep/labels.js';
 
 const USAGE = `code-reviewer — standalone multi-agent PR review service
 
@@ -27,6 +28,8 @@ Usage:
                                                 file concerns as issues (never fixes, never gates)
   code-reviewer landed <owner/repo> <pr#>       a PR merged: label the tickets it addresses
                                                 needs-judging and lift their blocking edges
+  code-reviewer labels <owner/repo>             bring the repo's labels in line with the ticket
+                                                label scheme: rename retired names, set colours
   code-reviewer migrate                        apply pending migrations (advisory-locked)
   code-reviewer next <owner/repo>               print the PR number of the next queued review
   code-reviewer abandon <owner/repo> <pr#> [why]  record that a run ended mid-stage (CI cleanup)
@@ -93,6 +96,14 @@ async function main() {
       if (!slug || !/^\d+$/.test(pr ?? '')) return usageExit();
       configureAppAuth(slug);
       await runLanded(slug, Number(pr));
+      break;
+    }
+    case 'labels': {
+      const [slug, ...extra] = rest;
+      if (!slug || extra.length > 0) return usageExit();
+      configureAppAuth(slug);
+      const { ops, leftBehind } = await syncLabels(slug);
+      console.log(`${ops.length} label change(s)${leftBehind.length > 0 ? `, ${leftBehind.length} left to merge by hand` : ''}`);
       break;
     }
     case 'migrate':

@@ -15,13 +15,13 @@ import {
 } from '../github.js';
 import { ANSWER_AUTHORITY } from '../stages/answers.js';
 import { requireRound, type ConcernRow, type SweepCtx } from '../stages/context.js';
-import { LABELS, parseDigestDismissals } from './render.js';
+import { LABELS, parseDigestDismissals, withStatus } from './render.js';
 
 /**
  * The owner's decisions on tickets, applied before the audit so tonight's auditors already know them.
  *
  * - `wontfix` on an open ticket — the reviewer's own concern or anyone's — is a dismissal. The sweep
- *   closes it as not planned, drops `needs-judging` / `needs-work` / `needs-answer`, lifts its
+ *   closes it as not planned, leaves `wontfix` as its only status label, lifts its
  *   blocking edges (telling each dependent its blocker was dismissed), and, if the owner wrote a
  *   comment with the label, saves that comment as a repo policy so the point is never raised again.
  *   With no comment the ticket is simply closed and nothing is recorded.
@@ -96,7 +96,7 @@ export async function settleOwnerDecisions(ctx: SweepCtx): Promise<{ judged: Jud
 
 /**
  * Apply one `wontfix`: record the reason (if any) as policy, resolve the concern (if it is one), lift
- * the blocking edges, strip the sweep's state labels and close the issue as not planned. Returns the
+ * the blocking edges, strip every other status label and close the issue as not planned. Returns the
  * reason that was recorded, or null when the owner gave none.
  */
 async function dismissTicket(ctx: SweepCtx, issue: IssueInfo, concern: ConcernRow | null): Promise<string | null> {
@@ -165,7 +165,7 @@ async function dismissTicket(ctx: SweepCtx, issue: IssueInfo, concern: ConcernRo
   if (lifted.length > 0) lines.push(`Unblocked #${lifted.join(', #')} — they now relate to this ticket instead of waiting on it.`);
   await postComment(slug, n, lines.join('\n\n'));
 
-  const labels = issue.labels.filter((l) => l !== LABELS.needsJudging && l !== LABELS.needsWork && l !== LABELS.needsAnswer);
+  const labels = withStatus(issue.labels, LABELS.dismissed);
   const patch: Parameters<typeof updateIssue>[2] = {};
   if (labels.length !== issue.labels.length) patch.labels = labels;
   if (issue.state === 'open') {

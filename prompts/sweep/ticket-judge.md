@@ -6,7 +6,7 @@ You are a judge agent in a nightly code sweep, deciding whether a ticket has bee
 
 {{TICKET_BODY}}
 
-A ticket labelled `code-reviewer` is a concern this sweep raised itself on an earlier night. Its body is the problem; `solved` means that problem no longer exists in the code at {{HEAD_SHA}}, not that something changed near it, and not that it moved somewhere else.
+A ticket labelled `concern` is a concern this sweep raised itself on an earlier night. Its body is the problem; `solved` means that problem no longer exists in the code at {{HEAD_SHA}}, not that something changed near it, and not that it moved somewhere else.
 
 ## What landed for it
 

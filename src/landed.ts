@@ -1,6 +1,4 @@
 import {
-  addIssueLabels,
-  ensureLabel,
   getIssue,
   getIssueRelations,
   getPrFacts,
@@ -8,13 +6,14 @@ import {
   swapBlockedByForRelatesTo,
   updateIssue,
 } from './github.js';
-import { LABEL_DEFINITIONS, LABELS } from './sweep/render.js';
+import { syncLabels } from './sweep/labels.js';
+import { LABELS, withStatus } from './sweep/render.js';
 
 /**
  * What happens to a ticket when the pull request addressing it merges — done here, on the merge
  * event, so no agent has to remember it. For each ticket the PR body names:
  *
- *   1. the ticket is labelled `needs-judging`, which is how the nightly judge finds it;
+ *   1. the ticket's status becomes `needs-judging`, which is how the nightly judge finds it;
  *   2. every ticket it blocks is unblocked, the "blocked by" edge becoming "relates to", so
  *      dependent work can start today rather than after the judge runs.
  *
@@ -37,9 +36,7 @@ export async function runLanded(repoSlug: string, prNumber: number): Promise<voi
   }
   console.log(`PR #${prNumber} merged, naming ticket(s) #${tickets.join(', #')}`);
 
-  for (const label of LABEL_DEFINITIONS) {
-    if (label.name === LABELS.needsJudging || label.name === LABELS.needsWork) await ensureLabel(repoSlug, label);
-  }
+  await syncLabels(repoSlug);
 
   for (const n of tickets) {
     let issue;
@@ -54,19 +51,21 @@ export async function runLanded(repoSlug: string, prNumber: number): Promise<voi
       console.log(`  #${n} was closed by hand — final, not judged`);
       continue;
     }
+    if (issue.labels.includes(LABELS.dismissed)) {
+      console.log(`  #${n} is labelled ${LABELS.dismissed} — a dismissal, left for tonight's sweep`);
+      continue;
+    }
     let reopened = false;
     if (issue.state === 'closed') {
       await updateIssue(repoSlug, n, { state: 'open' });
       reopened = true;
       console.log(`  #${n} was closed by PR #${prNumber}'s keyword — reopened for the judge`);
     }
-    // A `needs-work` ticket whose follow-up lands goes back to the judge: the send-back is over.
-    if (issue.labels.includes(LABELS.needsWork)) {
-      await updateIssue(repoSlug, n, {
-        labels: [...issue.labels.filter((l) => l !== LABELS.needsWork && l !== LABELS.needsJudging), LABELS.needsJudging],
-      });
-    } else if (!issue.labels.includes(LABELS.needsJudging)) {
-      await addIssueLabels(repoSlug, n, [LABELS.needsJudging]);
+    // One status per ticket: `needs-judging` replaces whatever it carried — `ready-for-agent`, or
+    // `needs-work` when this is the follow-up to a send-back.
+    const labels = withStatus(issue.labels, LABELS.needsJudging);
+    if (labels.length !== issue.labels.length || !issue.labels.includes(LABELS.needsJudging)) {
+      await updateIssue(repoSlug, n, { labels });
     }
 
     const lifted: number[] = [];

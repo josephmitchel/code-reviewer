@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   LABELS,
+  STATUS_LABELS,
+  concernStatus,
   issueLabels,
   parseDigestDismissals,
   renderDigestBody,
   renderIssueBody,
+  withStatus,
 } from './render.js';
 
 /**
@@ -69,20 +72,64 @@ describe('renderIssueBody', () => {
 });
 
 describe('issueLabels', () => {
-  it('keeps the owner labels and replaces only ours', () => {
+  it('keeps the owner labels and replaces only ours, old spellings included', () => {
     const labels = issueLabels(
       { level: 'moderate', characteristics: ['security'] },
       true,
-      ['bug', 'level: major', 'quality: reliability', 'good first issue'],
+      ['accessibility', 'code-reviewer', 'level: major', 'quality: reliability', 'major', 'reliability'],
     );
-    expect(labels).toEqual(['bug', 'good first issue', LABELS.reviewer, 'level: moderate', 'quality: security', LABELS.needsAnswer]);
+    expect(labels).toEqual(['accessibility', LABELS.concern, 'moderate', 'security', LABELS.needsAnswer]);
   });
 
-  it('drops needs-answer once every question is answered', () => {
-    expect(issueLabels({ level: 'major', characteristics: [] }, false, [LABELS.needsAnswer])).toEqual([
-      LABELS.reviewer,
-      'level: major',
+  it('gives a concern exactly one kind', () => {
+    expect(issueLabels({ level: 'major', characteristics: [] }, false, ['bug', 'spec'])).toEqual([
+      LABELS.concern,
+      'major',
+      LABELS.readyForAgent,
     ]);
+  });
+
+  it('starts a concern as ready-for-agent, or needs-answer while a question is open', () => {
+    expect(issueLabels({ level: 'major', characteristics: [] }, false)).toContain(LABELS.readyForAgent);
+    expect(issueLabels({ level: 'major', characteristics: [] }, true)).toContain(LABELS.needsAnswer);
+    expect(issueLabels({ level: 'major', characteristics: [] }, true)).not.toContain(LABELS.readyForAgent);
+  });
+
+  it('moves to ready-for-agent once every question is answered', () => {
+    expect(issueLabels({ level: 'major', characteristics: [] }, false, [LABELS.needsAnswer])).toEqual([
+      LABELS.concern,
+      'major',
+      LABELS.readyForAgent,
+    ]);
+  });
+
+  it('never carries two statuses', () => {
+    for (const existing of STATUS_LABELS) {
+      for (const pending of [true, false]) {
+        const labels = issueLabels({ level: 'moderate', characteristics: ['testing'] }, pending, [existing, LABELS.readyForAgent]);
+        expect(labels.filter((l) => STATUS_LABELS.includes(l)), `${existing} pending=${pending}`).toHaveLength(1);
+      }
+    }
+  });
+});
+
+describe('concernStatus', () => {
+  it('leaves a dismissal, a pending judgement and a send-back alone, even with a question open', () => {
+    expect(concernStatus(true, [LABELS.dismissed])).toBe(LABELS.dismissed);
+    expect(concernStatus(true, [LABELS.needsJudging])).toBe(LABELS.needsJudging);
+    expect(concernStatus(false, [LABELS.needsWork])).toBe(LABELS.needsWork);
+  });
+
+  it('keeps where the owner routed it once nothing is waiting on an answer', () => {
+    expect(concernStatus(false, [LABELS.readyForHuman])).toBe(LABELS.readyForHuman);
+    expect(concernStatus(true, [LABELS.readyForHuman])).toBe(LABELS.needsAnswer);
+  });
+});
+
+describe('withStatus', () => {
+  it('replaces every status with the one given, or with none', () => {
+    expect(withStatus(['spec', LABELS.readyForAgent, LABELS.needsWork], LABELS.needsJudging)).toEqual(['spec', LABELS.needsJudging]);
+    expect(withStatus(['spec', LABELS.needsJudging], null)).toEqual(['spec']);
   });
 });
 
