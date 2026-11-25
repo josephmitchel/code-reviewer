@@ -1,3 +1,5 @@
+> **Archived.** The code reviewer now lives in [josephmitchel/jm-devkit](https://github.com/josephmitchel/jm-devkit), under `reviewer/`, with its full history. Projects use it from there; nothing here is maintained.
+
 # Code Reviewer
 
 A standalone, repo-agnostic multi-agent code review service with two modes. The **PR loop** audits a pull request's diff (plus blast radius) against the nine ISO/IEC 25010:2023 quality characteristics plus test quality, posts a report with questions to the PR, plans and pushes fixes after the owner replies, verifies them with judge agents, and gates the PR with a `code-reviewer/gate` commit status on the exact verified head SHA. The **nightly sweep** runs the same audit over what landed on the default branch each day and files the concerns as GitHub issues, and judges every ticket whose PR has merged, its own issues included — advisory, never blocking.
